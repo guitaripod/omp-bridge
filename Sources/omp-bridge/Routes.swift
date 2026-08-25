@@ -256,6 +256,10 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         return jsonResponse(response)
     }
 
+    router.get("models") { _, _ in
+        jsonResponse(await app.modelCatalog())
+    }
+
     router.get("commands") { request, _ in
         guard let sessionID = request.uri.queryParameters.get("session"),
             let session = await app.liveSession(id: sessionID)

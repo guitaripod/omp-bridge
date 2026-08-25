@@ -320,6 +320,54 @@ actor App {
         await hub.runHeartbeats()
     }
 
+    private var cachedModels: (fetchedAt: Date, models: [JSONValue])?
+    private var modelScratchProcess: OmpProcess?
+
+    func modelCatalog() async -> [JSONValue] {
+        if let cached = cachedModels, Date().timeIntervalSince(cached.fetchedAt) < 300 {
+            return cached.models
+        }
+        let process: OmpProcess
+        if let existing = await modelScratchRunning() {
+            process = existing
+        } else {
+            let created = OmpProcess(ompBin: config.ompBin, directory: config.workdir) { _ in }
+            do {
+                try await created.start()
+            } catch {
+                FileHandle.standardError.write(Data("models: scratch start failed: \(error)\n".utf8))
+                return []
+            }
+            process = created
+            self.modelScratchProcess = created
+        }
+        let response = await process.request("get_available_models", timeout: 30)
+        guard response.success, let list = response.data?["models"]?.arrayValue else {
+            FileHandle.standardError.write(Data("models: request failed: \(response.error ?? "unknown")\n".utf8))
+            return []
+        }
+        let models = list.compactMap { entry -> JSONValue? in
+            guard let id = entry["id"]?.stringValue else { return nil }
+            return .object([
+                "id": .string(id),
+                "name": .string(entry["name"]?.stringValue ?? id),
+                "provider": .string(
+                    entry["provider"]?.stringValue
+                        ?? id.split(separator: "/").first.map(String.init) ?? ""),
+            ])
+        }
+        cachedModels = (Date(), models)
+        return models
+    }
+
+    private func modelScratchRunning() async -> OmpProcess? {
+        guard let existing = modelScratchProcess, await existing.isRunning else {
+            modelScratchProcess = nil
+            return nil
+        }
+        return existing
+    }
+
     func shutdown() async {
         await flushAll()
         for (_, session) in sessions {

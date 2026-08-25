@@ -8,6 +8,20 @@ struct OmpRPCResponse: Sendable {
     let data: JSONValue?
 }
 
+extension JSONValue: Encodable {
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null: try container.encodeNil()
+        case .bool(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .string(let value): try container.encode(value)
+        case .array(let values): try container.encode(values)
+        case .object(let values): try container.encode(values)
+        }
+    }
+}
+
 enum JSONValue: Sendable {
     case null
     case bool(Bool)
