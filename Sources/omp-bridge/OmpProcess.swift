@@ -140,8 +140,15 @@ actor OmpProcess {
         stdinHandle = inPipe.fileHandleForWriting
         isRunning = true
         let reader = LineReader(handle: outPipe.fileHandleForReading)
-        Task.detached(priority: .userInitiated) { [weak self] in
-            await self?.readLoop(reader)
+        let channel = self
+        Task.detached(priority: .userInitiated) { [weak channel] in
+            while let line = reader.nextLine() {
+                guard !line.isEmpty, let data = line.data(using: .utf8),
+                    let obj = try? JSONSerialization.jsonObject(with: data)
+                else { continue }
+                await channel?.ingest(JSONValue.from(obj))
+            }
+            await channel?.terminated()
         }
     }
 
@@ -170,16 +177,8 @@ actor OmpProcess {
         isRunning = false
     }
 
-    private func readLoop(_ reader: LineReader) async {
-        while let line = reader.nextLine() {
-            guard !line.isEmpty else { continue }
-            guard let data = line.data(using: .utf8),
-                let obj = try? JSONSerialization.jsonObject(with: data)
-            else { continue }
-            let value = JSONValue.from(obj)
-            await handleLine(value)
-        }
-        await terminated()
+    func ingest(_ value: JSONValue) async {
+        await handleLine(value)
     }
 
     private func handleLine(_ value: JSONValue) async {
