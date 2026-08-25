@@ -208,7 +208,12 @@ WantedBy=default.target
 EOF
   systemctl --user daemon-reload
   loginctl enable-linger "$USER" >/dev/null 2>&1 || true
-  systemctl --user enable --now "$UNIT" >/dev/null 2>&1 || fail "could not start $UNIT"
+  if systemctl --user is-active --quiet "$UNIT" 2>/dev/null; then
+    say "restarting $UNIT"
+    systemctl --user restart "$UNIT" >>"$LOG" 2>&1 || fail "restart failed"
+  else
+    systemctl --user enable --now "$UNIT" >/dev/null 2>&1 || fail "could not start $UNIT"
+  fi
 }
 
 install_service_macos() {
