@@ -148,8 +148,32 @@ write_config() {
     fi
     return 0
   fi
-  local password
-  password="${OMP_PASSWORD:-$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-24)}"
+  local password source_label
+  if [ -n "${OMP_PASSWORD:-}" ]; then
+    password="$OMP_PASSWORD"
+    source_label="the one you passed"
+  else
+    for env_file in "$HOME/.config/claude-bridge.env" "$HOME/.config/opencode-serve.env"; do
+      [ -f "$env_file" ] || continue
+      found="$(
+        sed -n 's/^\(export \)\?BRIDGE_PASSWORD=\(.*\)$/\2/p' "$env_file" | head -1
+      )"
+      [ -n "$found" ] || found="$(
+        sed -n 's/^\(export \)\?OPENCODE_SERVER_PASSWORD=\(.*\)$/\2/p' "$env_file" | head -1
+      )"
+      found="$(printf '%s' "$found" | tr -d '"')"
+      if [ -n "$found" ]; then
+        password="$found"
+        source_label="the password $env_file already uses"
+        break
+      fi
+    done
+  fi
+  if [ -z "${password:-}" ]; then
+    password="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-24)"
+    source_label="generated just now — it is in $CONFIG"
+  fi
+  say "using $source_label as OMP_PASSWORD"
   mkdir -p "$(dirname "$CONFIG")"
   omp_bin="$(command -v omp || true)"
   [ -n "$omp_bin" ] || for candidate in /usr/local/bin/omp "$HOME/.local/bin/omp" "$HOME/.bun/bin/omp"; do
