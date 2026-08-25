@@ -151,12 +151,17 @@ write_config() {
   local password
   password="${OMP_PASSWORD:-$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-24)}"
   mkdir -p "$(dirname "$CONFIG")"
+  omp_bin="$(command -v omp || true)"
+  [ -n "$omp_bin" ] || for candidate in /usr/local/bin/omp "$HOME/.local/bin/omp" "$HOME/.bun/bin/omp"; do
+    [ -x "$candidate" ] && omp_bin="$candidate" && break
+  done
   cat >"$CONFIG" <<EOF
-export OMP_PASSWORD="$password"
-export OMP_PORT=$PORT
-export OMP_BIND=0.0.0.0
-export OMP_STATE_DIR=$STATE_DIR
-export OMP_SRC=$SRC
+OMP_PASSWORD="$password"
+OMP_PORT=$PORT
+OMP_BIND=0.0.0.0
+OMP_STATE_DIR=$STATE_DIR
+OMP_SRC=$SRC
+OMP_BIN=${omp_bin:-/usr/local/bin/omp}
 EOF
   chmod 600 "$CONFIG"
 }
