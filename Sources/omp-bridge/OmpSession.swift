@@ -57,6 +57,7 @@ actor OmpSession {
     private let quietRegistry: QuietRegistry
     private var process: OmpProcess?
     private(set) var running = false
+    private(set) var externallyLive = false
     private(set) var compacting = false
     private var queued: [QueuedPrompt] = []
     private var turns: [TurnRecord] = []
@@ -95,7 +96,7 @@ actor OmpSession {
         SessionSummary(
             id: id, title: title, directory: directory, model: model, effort: effort,
             createdAt: createdAt, updatedAt: updatedAt,
-            active: running ? true : nil,
+            active: (running || externallyLive) ? true : nil,
             interrupted: nil,
             agents: activeAgentCount > 0 ? activeAgentCount : nil)
     }
@@ -898,6 +899,8 @@ actor OmpSession {
         }
     }
 
+    static let externalActivityWindow: TimeInterval = 180
+
     static func derivedTitle(from text: String) -> String {
         let line = text
             .split(separator: "\n", omittingEmptySubsequences: true)
@@ -953,8 +956,13 @@ extension OmpSession {
     }
 
     func refreshFromTranscriptIfIdle() async {
-        guard !running, compacting == false, queued.isEmpty, let file = ompSessionFile else { return }
+        guard !running, compacting == false, queued.isEmpty, let file = ompSessionFile else {
+            externallyLive = false
+            return
+        }
         let loaded = TranscriptLoader.load(sessionFile: file)
+        let window = Date().addingTimeInterval(Self.externalActivityWindow)
+        externallyLive = (loaded.updatedAt ?? .distantPast) > window
         if loaded.messages.count != messages.count {
             await adoptExternally(loaded: loaded, ompID: loaded.sessionID)
             touch()
