@@ -79,7 +79,7 @@ actor App {
     func knowsSession(id: String) -> Bool { sessions[id] != nil }
 
     func adoptDiscovered(id wanted: String) async -> OmpSession? {
-        if let live = sessions[wanted] { return live }
+        if let live = await sessionOwning(transcriptID: wanted) { return live }
         let claimedFiles = await claimedFiles()
         let hidden = await store.hiddenList()
         let found = Discovery.scan(
@@ -92,16 +92,49 @@ actor App {
         return await adopt(file: match.file, ompID: match.ompSessionID)
     }
 
+    /// The live session that already answers for this bridge id, omp session id, or transcript
+    /// file, if any. Adoption MUST consult this first: the App actor is reentrant, and a client
+    /// opening a chat fires several requests at once — without the lookup each one adopts the same
+    /// transcript under a fresh UUID and the list grows a twin.
+    private func sessionOwning(transcriptID: String? = nil, file: String? = nil) async -> OmpSession? {
+        if let transcriptID {
+            if let live = sessions[transcriptID] { return live }
+            for (id, owned) in ownedTranscriptsBySession where owned.contains(transcriptID) {
+                if let live = sessions[id] { return live }
+            }
+            for (_, session) in sessions where await session.currentOmpSessionID() == transcriptID {
+                return session
+            }
+        }
+        if let file {
+            for (_, session) in sessions where await session.sessionFile() == file {
+                return session
+            }
+        }
+        return nil
+    }
+
+    private var adoptionsInFlight: [String: Task<OmpSession, Never>] = [:]
+
     func adopt(file: String, ompID: String?) async -> OmpSession {
-        let adopted = TranscriptLoader.load(sessionFile: file)
-        let session = OmpSession(
-            title: adopted.title ?? OmpSession.derivedTitle(from: adopted.firstUserText ?? "Session"),
-            directory: adopted.cwd ?? config.workdir,
-            model: config.defaultModel ?? "",
-            effort: config.defaultEffort,
-            ompSessionFile: file, config: config, hub: hub, quietRegistry: quietRegistry,
-            journal: journal)
-        await session.adoptExternally(loaded: adopted, ompID: ompID)
+        if let existing = await sessionOwning(transcriptID: ompID, file: file) { return existing }
+        if let inFlight = adoptionsInFlight[file] { return await inFlight.value }
+        let task = Task { [config, hub, quietRegistry, journal] in
+            let adopted = TranscriptLoader.load(sessionFile: file)
+            let session = OmpSession(
+                title: adopted.title ?? OmpSession.derivedTitle(from: adopted.firstUserText ?? "Session"),
+                directory: adopted.cwd ?? config.workdir,
+                model: config.defaultModel ?? "",
+                effort: config.defaultEffort,
+                ompSessionFile: file, config: config, hub: hub, quietRegistry: quietRegistry,
+                journal: journal)
+            await session.adoptExternally(loaded: adopted, ompID: ompID)
+            return session
+        }
+        adoptionsInFlight[file] = task
+        let session = await task.value
+        adoptionsInFlight.removeValue(forKey: file)
+        if let existing = await sessionOwning(transcriptID: ompID, file: file) { return existing }
         sessions[session.id] = session
         ownedTranscriptsBySession[session.id] = Set(await session.ownedTranscriptIDs())
         await store.upsert(await record(for: session))
@@ -112,7 +145,7 @@ actor App {
         if let session = sessions.removeValue(forKey: id) {
             await session.shutdown()
             ownedTranscriptsBySession.removeValue(forKey: id)
-            await store.remove(id)
+            _ = await store.remove(id)
         } else {
             _ = await store.remove(id)
         }
@@ -157,7 +190,8 @@ actor App {
         let discovered = Discovery.scan(
             root: config.ompSessionsRoot, hidden: hidden, claimedFiles: claimedFiles,
             cache: discoveryCache)
-        for item in discovered {
+        let claimedIDs = Set(ownedTranscriptsBySession.values.flatMap { $0 })
+        for item in discovered where !claimedIDs.contains(item.ompSessionID) {
             byID[item.ompSessionID] = SessionSummary(
                 id: item.ompSessionID, title: item.title, directory: item.directory,
                 model: "", effort: "", createdAt: item.updatedAt, updatedAt: item.updatedAt)
@@ -195,6 +229,7 @@ actor App {
         lastSummaries = current
         for (_, session) in sessions {
             await session.refreshFromTranscriptIfIdle()
+            ownedTranscriptsBySession[session.id] = Set(await session.ownedTranscriptIDs())
             let updatedAt = await session.updatedDate()
             guard lastStoredAt[session.id] != updatedAt else { continue }
             lastStoredAt[session.id] = updatedAt
@@ -238,7 +273,24 @@ actor App {
     }
 
     // MARK: interruptions
+    /// Restores the store, keeping exactly one session per transcript file: earlier builds could
+    /// adopt the same transcript twice under different UUIDs, and a store carrying such twins would
+    /// re-grow the doubled row on every launch. The newest record wins; the losers are removed for
+    /// good, not hidden, so the survivor keeps answering for the transcript.
     private func restorePersistedSessions() async {
+        var ownerByFile: [String: SessionRecord] = [:]
+        var twins: [SessionRecord] = []
+        for record in await store.allRecords().sorted(by: { $0.updatedAt > $1.updatedAt }) {
+            guard let file = record.ompSessionFile else { continue }
+            if ownerByFile[file] == nil {
+                ownerByFile[file] = record
+            } else {
+                twins.append(record)
+            }
+        }
+        for twin in twins {
+            _ = await store.removeWithoutHiding(twin.id)
+        }
         for record in await store.allRecords() {
             guard sessions[record.id] == nil else { continue }
             guard let file = record.ompSessionFile,

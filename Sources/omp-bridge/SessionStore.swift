@@ -63,6 +63,14 @@ actor SessionStore {
         return record
     }
 
+    /// Drops a record without hiding its transcripts — for retiring a duplicate whose transcript
+    /// another record keeps answering for. `remove(_:)`'s hide would blind the survivor too.
+    func removeWithoutHiding(_ id: String) -> SessionRecord? {
+        let record = records.removeValue(forKey: id)
+        if record != nil { persistNow() }
+        return record
+    }
+
     func isHidden(_ ompSessionID: String) -> Bool { hidden.contains(ompSessionID) }
 
     func hiddenList() -> [String] { hidden }
