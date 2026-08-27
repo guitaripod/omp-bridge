@@ -10,19 +10,26 @@ struct DiscoveredSession: Sendable {
 }
 
 enum Discovery {
+    static func isJunkDirectory(_ path: String) -> Bool {
+        let junkPrefixes = ["/tmp", "/private/tmp", "/var/folders", "/var/tmp"]
+        return junkPrefixes.contains { path.hasPrefix($0) }
+    }
+
     static func scan(root: String, hidden: [String], claimedFiles: Set<String>) -> [DiscoveredSession] {
         let fm = FileManager.default
         var found: [DiscoveredSession] = []
         if root.hasSuffix(".jsonl") || hasJSONLChildren(root) {
             collect(fromDirectory: root, hidden: hidden, claimedFiles: claimedFiles, into: &found)
-            return found.sorted { $0.updatedAt > $1.updatedAt }
+            return found.filter { $0.directory.map { !isJunkDirectory($0) } ?? true }
+                .sorted { $0.updatedAt > $1.updatedAt }
         }
         guard let dirs = try? fm.contentsOfDirectory(atPath: root) else { return [] }
         for dir in dirs {
             let dirPath = root + "/" + dir
             collect(fromDirectory: dirPath, hidden: hidden, claimedFiles: claimedFiles, into: &found)
         }
-        return found.sorted { $0.updatedAt > $1.updatedAt }
+        return found.filter { $0.directory.map { !isJunkDirectory($0) } ?? true }
+            .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     private static func hasJSONLChildren(_ path: String) -> Bool {

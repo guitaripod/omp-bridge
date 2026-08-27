@@ -59,10 +59,10 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
     }
 
     @Test func discoversSessionsAndHonorsHidden() {
-        let root = makeTempDir("sessions-root") + "/-tmp-proj"
+        let root = makeTempDir("sessions-root") + "/-home-proj"
         try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
         let visible = writeTranscript(root, lines: [
-            #"{"type":"session","id":"11111111-1111-7111-8111-111111111111","cwd":"/tmp/proj"}"#,
+            #"{"type":"session","id":"11111111-1111-7111-8111-111111111111","cwd":"/home/proj"}"#,
             #"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"find me"}]}}"#,
         ])
         _ = writeTranscript(root, lines: [
