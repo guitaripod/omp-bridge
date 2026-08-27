@@ -398,13 +398,18 @@ actor App {
         }
         let models = list.compactMap { entry -> JSONValue? in
             guard let id = entry["id"]?.stringValue else { return nil }
-            return .object([
+            var model: [String: JSONValue] = [
                 "id": .string(id),
                 "name": .string(entry["name"]?.stringValue ?? id),
                 "provider": .string(
                     entry["provider"]?.stringValue
                         ?? id.split(separator: "/").first.map(String.init) ?? ""),
-            ])
+            ]
+            let efforts = entry["thinking"]?["efforts"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            if !efforts.isEmpty {
+                model["variants"] = .array(efforts.map { JSONValue.string($0) })
+            }
+            return .object(model)
         }
         failedModelsAt = nil
         cachedModels = (Date(), models)
