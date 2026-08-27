@@ -278,10 +278,19 @@ actor OmpSession {
         await quietRegistry.increment()
         await publish(.status("running"))
         _ = await proc.request("prompt", fields: ["message": prompt])
+        await syncState(from: proc)
+    }
+
+    private func syncState(from proc: OmpProcess) async {
         let state = await proc.request("get_state", timeout: 15)
-        if let data = state.data {
-            if let file = data["sessionFile"]?.stringValue { ompSessionFile = file }
-            if let sid = data["sessionId"]?.stringValue { ompSessionID = sid }
+        guard let data = state.data else { return }
+        if let file = data["sessionFile"]?.stringValue { ompSessionFile = file }
+        if let sid = data["sessionId"]?.stringValue { ompSessionID = sid }
+        if let model = data["model"]?["id"]?.stringValue, model != self.model {
+            self.model = model
+        }
+        if let level = data["thinkingLevel"]?.stringValue {
+            effort = normalizeEffort(level)
         }
     }
 
@@ -938,6 +947,15 @@ extension OmpSession {
         if let first = loaded.firstUserText, !customTitle {
             title = Self.derivedTitle(from: first)
             autoTitled = true
+        }
+    }
+
+    func refreshFromTranscriptIfIdle() async {
+        guard !running, compacting == false, queued.isEmpty, let file = ompSessionFile else { return }
+        let loaded = TranscriptLoader.load(sessionFile: file)
+        if loaded.messages.count != messages.count {
+            await adoptExternally(loaded: loaded, ompID: loaded.sessionID)
+            touch()
         }
     }
 

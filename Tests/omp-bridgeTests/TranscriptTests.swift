@@ -93,6 +93,23 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         #expect(await session.snapshotMessages().count == 1)
     }
 
+    @Test func adoptLoadsTranscriptMessages() async throws {
+        let dir = makeTempDir("adopt-load")
+        let path = writeTranscript(dir, lines: [
+            #"{"type":"session","id":"sess-live","cwd":"/tmp/live"}"#,
+            #"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"first prompt"}]}}"#,
+            #"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"an answer"}]}}"#,
+        ])
+        let config = Config(
+            port: 0, bind: "127.0.0.1", password: "x", workdir: dir,
+            ompBin: "/nonexistent/omp", storePath: dir + "/sessions.json",
+            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium")
+        let app = App(config: config)
+        let session = await app.adopt(file: path, ompID: "sess-live")
+        #expect(await session.snapshotMessages().count == 2)
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
     @Test func deletedSessionStaysGoneAfterReopen() async throws {
         let dir = makeTempDir("hide")
         let ompID = "33333333-3333-7333-8333-333333333333"
