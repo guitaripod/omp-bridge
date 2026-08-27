@@ -96,8 +96,9 @@ actor App {
             model: config.defaultModel ?? "",
             effort: config.defaultEffort,
             ompSessionFile: file, config: config, hub: hub, quietRegistry: quietRegistry)
-        await session.adoptExternally(loaded: adopted, ompID: ompID)
+        sessions[session.id] = session
         ownedTranscriptsBySession[session.id] = Set(await session.ownedTranscriptIDs())
+        await store.upsert(await record(for: session))
         return session
     }
 
