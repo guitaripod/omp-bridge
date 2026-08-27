@@ -9,24 +9,40 @@ struct DiscoveredSession: Sendable {
     let firstUserText: String?
 }
 
+/// Per-path light-parse results keyed by mtime, so the observer's once-a-second scan re-reads a
+/// transcript only when it actually changed instead of loading every file on the machine each tick.
+final class DiscoveryCache {
+    struct Light {
+        let mtime: Date
+        let ompSessionID: String?
+        let title: String?
+        let cwd: String?
+        let firstUserText: String?
+    }
+
+    var lights: [String: Light] = [:]
+}
+
 enum Discovery {
     static func isJunkDirectory(_ path: String) -> Bool {
         let junkPrefixes = ["/tmp", "/private/tmp", "/var/folders", "/var/tmp"]
         return junkPrefixes.contains { path.hasPrefix($0) }
     }
 
-    static func scan(root: String, hidden: [String], claimedFiles: Set<String>) -> [DiscoveredSession] {
+    static func scan(
+        root: String, hidden: [String], claimedFiles: Set<String>, cache: DiscoveryCache? = nil
+    ) -> [DiscoveredSession] {
         let fm = FileManager.default
         var found: [DiscoveredSession] = []
         if root.hasSuffix(".jsonl") || hasJSONLChildren(root) {
-            collect(fromDirectory: root, hidden: hidden, claimedFiles: claimedFiles, into: &found)
+            collect(fromDirectory: root, hidden: hidden, claimedFiles: claimedFiles, cache: cache, into: &found)
             return found.filter { $0.directory.map { !isJunkDirectory($0) } ?? true }
                 .sorted { $0.updatedAt > $1.updatedAt }
         }
         guard let dirs = try? fm.contentsOfDirectory(atPath: root) else { return [] }
         for dir in dirs {
             let dirPath = root + "/" + dir
-            collect(fromDirectory: dirPath, hidden: hidden, claimedFiles: claimedFiles, into: &found)
+            collect(fromDirectory: dirPath, hidden: hidden, claimedFiles: claimedFiles, cache: cache, into: &found)
         }
         return found.filter { $0.directory.map { !isJunkDirectory($0) } ?? true }
             .sorted { $0.updatedAt > $1.updatedAt }
@@ -39,29 +55,42 @@ enum Discovery {
 
     private static func collect(
         fromDirectory dirPath: String, hidden: [String], claimedFiles: Set<String>,
-        into found: inout [DiscoveredSession]
+        cache: DiscoveryCache?, into found: inout [DiscoveredSession]
     ) {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(atPath: dirPath) else { return }
         for file in files where file.hasSuffix(".jsonl") {
             let path = dirPath + "/" + file
             if claimedFiles.contains(path) { continue }
-            guard let loaded = loadLight(path) else { continue }
-            if let id = loaded.ompSessionID, hidden.contains(id) { continue }
+            let mtime = TranscriptLoader.mtime(path) ?? Date()
+            let light: DiscoveryCache.Light
+            if let cached = cache?.lights[path], cached.mtime == mtime {
+                light = cached
+            } else {
+                guard let loaded = loadLight(path) else { continue }
+                light = DiscoveryCache.Light(
+                    mtime: mtime, ompSessionID: loaded.ompSessionID, title: loaded.title,
+                    cwd: loaded.cwd, firstUserText: loaded.firstUserText)
+                cache?.lights[path] = light
+            }
+            if let id = light.ompSessionID, hidden.contains(id) { continue }
             if hidden.contains(file.replacingOccurrences(of: ".jsonl", with: "")) { continue }
             found.append(
                 DiscoveredSession(
-                    ompSessionID: loaded.ompSessionID
+                    ompSessionID: light.ompSessionID
                         ?? file.replacingOccurrences(of: ".jsonl", with: ""),
-                    file: path, title: loaded.title ?? "Session",
-                    directory: loaded.cwd,
-                    updatedAt: TranscriptLoader.mtime(path) ?? Date(),
-                    firstUserText: loaded.firstUserText))
+                    file: path, title: light.title ?? "Session",
+                    directory: light.cwd,
+                    updatedAt: mtime,
+                    firstUserText: light.firstUserText))
         }
     }
 
     private static func loadLight(_ path: String) -> (ompSessionID: String?, title: String?, cwd: String?, firstUserText: String?)? {
-        guard let raw = FileManager.default.contents(atPath: path), !raw.isEmpty else { return nil }
+        guard let handle = FileHandle(forReadingAtPath: path),
+            let raw = try? handle.read(upToCount: 262_144), !raw.isEmpty
+        else { return nil }
+        try? handle.close()
         var id: String?
         var title: String?
         var cwd: String?

@@ -55,6 +55,7 @@ actor OmpSession {
     private let config: Config
     private let hub: Hub
     private let quietRegistry: QuietRegistry
+    private let journal: TurnJournal?
     private var process: OmpProcess?
     private(set) var running = false
     private(set) var externallyLive = false
@@ -70,6 +71,8 @@ actor OmpSession {
     private var liveUsage = TokenCounts()
     private var liveCost = 0.0
     private var liveModel: String?
+    private var lastSnapshotAt = Date.distantPast
+    private var lastTranscriptMtime: Date?
     private var turnStartedAt: Date?
     private var turnPrompt: String?
     private var turnCalls = 0
@@ -108,7 +111,7 @@ actor OmpSession {
     init(
         id: String = UUID().uuidString, title: String = "New chat", directory: String,
         model: String, effort: String, ompSessionFile: String? = nil, config: Config, hub: Hub,
-        quietRegistry: QuietRegistry
+        quietRegistry: QuietRegistry, journal: TurnJournal? = nil
     ) {
         self.id = id
         self.title = title
@@ -121,9 +124,13 @@ actor OmpSession {
         self.config = config
         self.hub = hub
         self.quietRegistry = quietRegistry
+        self.journal = journal
     }
 
-    func snapshotMessages() -> [Message] { messages }
+    func snapshotMessages() -> [Message] {
+        guard let live = liveMessageSnapshot() else { return messages }
+        return messages + [live]
+    }
     func snapshotTurns() -> [TurnRecord] { turns }
     func spendTotals() -> (costUSD: Double, tokens: TokenCounts) { (totalCostUSD, totalTokens) }
     func lastTurnCost() -> (costUSD: Double, tokens: Int)? {
@@ -178,31 +185,42 @@ actor OmpSession {
             adoptTranscriptIfNeeded()
         }
         if !model.isEmpty {
-            let target = model
-            Task { await self.applyModelOn(proc, target) }
+            await applyModelOn(proc, model)
+        }
+        if !effort.isEmpty {
+            _ = await proc.request(
+                "set_thinking_level", fields: ["level": thinkingLevel(for: effort)])
         }
         Task { await proc.request("set_subagent_subscription", fields: ["level": "events"]) }
         return proc
     }
 
-    private func applyModelOn(_ proc: OmpProcess, _ target: String) async {
+    /// Pins the engine to `target` (`provider/modelId`, or a bare id resolved against the live
+    /// catalog) and says whether the engine accepted it, so a caller can refuse to spend a turn
+    /// on whatever default the pin would have silently fallen through to.
+    @discardableResult
+    private func applyModelOn(_ proc: OmpProcess, _ target: String) async -> Bool {
         let parts = target.split(separator: "/", maxSplits: 1).map(String.init)
         if parts.count == 2 {
-            _ = await proc.request(
+            let response = await proc.request(
                 "set_model", fields: ["provider": parts[0], "modelId": parts[1]])
-        } else if let models = await proc.request("get_available_models").data,
-            let list = models["models"]?.arrayValue
-        {
-            for entry in list {
-                if entry["id"]?.stringValue == target || entry["name"]?.stringValue == target {
-                    if let provider = entry["provider"]?.stringValue, let modelID = entry["id"]?.stringValue {
-                        _ = await proc.request(
-                            "set_model", fields: ["provider": provider, "modelId": modelID])
-                    }
-                    break
-                }
-            }
+            if response.success { return true }
         }
+        guard let models = await proc.request("get_available_models", timeout: 120).data,
+            let list = models["models"]?.arrayValue
+        else { return false }
+        let wanted = parts.count == 2 ? parts[1] : target
+        for entry in list {
+            guard entry["id"]?.stringValue == wanted || entry["name"]?.stringValue == wanted,
+                parts.count != 2 || entry["provider"]?.stringValue == parts[0],
+                let provider = entry["provider"]?.stringValue,
+                let modelID = entry["id"]?.stringValue
+            else { continue }
+            let response = await proc.request(
+                "set_model", fields: ["provider": provider, "modelId": modelID])
+            return response.success
+        }
+        return false
     }
 
     func shutdown() async {
@@ -217,7 +235,7 @@ actor OmpSession {
         effort wantEffort: String?, attachments files: [FileRef] = []
     ) async throws -> (queued: Bool, position: Int?)
     {
-        var text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw BridgeError.badRequest("Empty message") }
 
         if text.hasPrefix("/compact") {
@@ -232,7 +250,7 @@ actor OmpSession {
             return (false, nil)
         }
 
-        var promptText = text
+        let promptText = text
         if let wantEffort, wantEffort != effort {
             effort = normalizeEffort(wantEffort)
             if let process {
@@ -240,11 +258,13 @@ actor OmpSession {
                     "set_thinking_level", fields: ["level": thinkingLevel(for: effort)])
             }
         }
-        if let wantModel, wantModel != model {
-            model = wantModel
-            if let process {
-                await applyModelOn(process, wantModel)
+        if let wantModel, wantModel != model, !wantModel.isEmpty {
+            let proc = try await ensureProcess()
+            guard await applyModelOn(proc, wantModel) else {
+                throw BridgeError.badRequest(
+                    "This machine's oh-my-pi has no model called \(wantModel)")
             }
+            model = wantModel
         }
 
         var userParts: [Part] = [.text(shown ?? text)]
@@ -278,7 +298,17 @@ actor OmpSession {
         turnLastErrorMessage = nil
         await quietRegistry.increment()
         await publish(.status("running"))
-        _ = await proc.request("prompt", fields: ["message": prompt])
+        await journal?.write(
+            JournalEntry(
+                turnID: "t-\(UUID().uuidString.prefix(8))", sessionID: id,
+                ompSessionFile: ompSessionFile, prompt: display, startedAt: Date(),
+                pid: await proc.processID))
+        let response = await proc.request("prompt", fields: ["message": prompt])
+        if !response.success, response.errorCode != "timeout", running {
+            await publish(.error(response.error ?? "The prompt was refused"))
+            finishTurn()
+            return
+        }
         await syncState(from: proc)
     }
 
@@ -320,11 +350,13 @@ actor OmpSession {
         }
         let proc = try await ensureProcess()
         compacting = true
+        await quietRegistry.increment()
         await publish(.compaction(phase: "started", error: nil))
         var fields: [String: Any] = [:]
         if let instructions, !instructions.isEmpty { fields["customInstructions"] = instructions }
         let response = await proc.request("compact", fields: fields, timeout: 900)
         compacting = false
+        await quietRegistry.decrement()
         if response.success {
             await publish(.compaction(phase: "finished", error: nil))
         } else {
@@ -335,14 +367,22 @@ actor OmpSession {
     private func drainQueue() async {
         guard !running, !queued.isEmpty else { return }
         let next = queued.removeFirst()
-        let userMessage = Message(
-            id: "u-\(UUID().uuidString.prefix(8))", role: .user,
-            parts: [.text(next.displayPrompt)], createdAt: Date(), seconds: nil, model: nil,
-            usage: nil, costUSD: nil)
-        messages.append(userMessage)
-        touch()
-        await publish(.messageUpserted(userMessage))
         do {
+            if let wantEffort = next.effort, normalizeEffort(wantEffort) != effort {
+                effort = normalizeEffort(wantEffort)
+                let proc = try await ensureProcess()
+                _ = await proc.request(
+                    "set_thinking_level", fields: ["level": thinkingLevel(for: effort)])
+            }
+            if let wantModel = next.model, wantModel != model, !wantModel.isEmpty {
+                let proc = try await ensureProcess()
+                if await applyModelOn(proc, wantModel) {
+                    model = wantModel
+                } else {
+                    await publish(
+                        .error("This machine's oh-my-pi has no model called \(wantModel); staying on \(model)"))
+                }
+            }
             try await startTurn(prompt: next.prompt, display: next.displayPrompt)
         } catch {
             await publish(.error(error.localizedDescription))
@@ -352,6 +392,7 @@ actor OmpSession {
     private func finishTurn() {
         guard running else { return }
         running = false
+        let unfinished = closeLiveMessage()
         if let startedAt = turnStartedAt {
             let record = TurnRecord(
                 at: startedAt, seconds: Date().timeIntervalSince(startedAt), model: liveModel,
@@ -365,10 +406,45 @@ actor OmpSession {
         turnStartedAt = nil
         settleUnansweredAsk()
         Task {
+            if let unfinished { await publish(.messageUpserted(unfinished)) }
             await publish(.status("idle"))
+            await journal?.clear(id)
             await quietRegistry.decrement()
             await drainQueue()
         }
+    }
+
+    /// Assembles and appends whatever the live message holds when a turn ends without its own
+    /// `message_end` — an abort, a dead process, an `agent_end` that outran the stream — so the
+    /// partial answer survives in the transcript instead of evaporating with the live buffer.
+    private func closeLiveMessage() -> Message? {
+        guard liveMessageID != nil, let assembled = liveMessageSnapshot(final: true) else {
+            return nil
+        }
+        messages.append(assembled)
+        touch()
+        liveMessageID = nil
+        liveParts = []
+        return assembled
+    }
+
+    private func liveMessageSnapshot(final: Bool = false) -> Message? {
+        guard let id = liveMessageID, let created = liveCreatedAt else { return nil }
+        return Message(
+            id: id, role: .assistant, parts: materializedParts(), createdAt: created,
+            seconds: final ? turnStartedAt.map { Date().timeIntervalSince($0) } : nil,
+            model: liveModel, usage: final ? liveUsage : nil, costUSD: final ? liveCost : nil)
+    }
+
+    /// A mid-turn transcript sync point: the whole live message, republished at most four times a
+    /// second. Reasoning and tool-input streaming ride on this rather than on `delta` frames,
+    /// because the wire's delta channel is untyped text and would write thinking into the answer.
+    private func publishLiveSnapshot(force: Bool = false) async {
+        guard let snapshot = liveMessageSnapshot() else { return }
+        let now = Date()
+        guard force || now.timeIntervalSince(lastSnapshotAt) >= 0.25 else { return }
+        lastSnapshotAt = now
+        await publish(.messageUpserted(snapshot))
     }
 
     private func settleUnansweredAsk() {
@@ -497,7 +573,7 @@ actor OmpSession {
 
     // MARK: omp event mapping
 
-    private func handleOmpEvent(_ frame: JSONValue) async {
+    func handleOmpEvent(_ frame: JSONValue) async {
         let type = frame["type"]?.stringValue ?? ""
         switch type {
         case "agent_start":
@@ -586,6 +662,14 @@ actor OmpSession {
             liveUsage = TokenCounts()
             liveCost = 0
             liveModel = message["model"]?.stringValue ?? liveModel
+            lastSnapshotAt = .distantPast
+            if let id = liveMessageID, let created = liveCreatedAt {
+                await publish(
+                    .messageUpserted(
+                        Message(
+                            id: id, role: .assistant, parts: [.text("")], createdAt: created,
+                            seconds: nil, model: liveModel, usage: nil, costUSD: nil)))
+            }
         case "user", "toolResult":
             break
         default:
@@ -610,9 +694,8 @@ actor OmpSession {
         case "thinking_start":
             liveParts.append(.reasoning(""))
         case "thinking_delta":
-            let delta = event["delta"]?.stringValue ?? ""
-            appendToLiveReasoning(delta)
-            await publish(.partTextDelta(messageID: messageID, delta: delta))
+            appendToLiveReasoning(event["delta"]?.stringValue ?? "")
+            await publishLiveSnapshot()
         case "toolcall_start":
             liveParts.append(
                 .tool(ToolCall(id: "pending-\(liveParts.count)", name: "", input: "", status: .running)))
@@ -620,6 +703,7 @@ actor OmpSession {
             let delta = event["delta"]?.stringValue ?? ""
             if let index = lastLiveToolIndex() {
                 updateToolPart(index: index) { $0.input += delta }
+                await publishLiveSnapshot()
             }
         case "toolcall_end":
             if let call = event["toolCall"], let index = lastLiveToolIndex() {
@@ -702,17 +786,8 @@ actor OmpSession {
         switch role {
         case "assistant":
             finalizeAssistant(message)
-            if let id = liveMessageID, let created = liveCreatedAt {
-                let assembled = Message(
-                    id: id, role: .assistant, parts: materializedParts(),
-                    createdAt: created,
-                    seconds: turnStartedAt.map { Date().timeIntervalSince($0) },
-                    model: liveModel, usage: liveUsage, costUSD: liveCost)
-                messages.append(assembled)
-                touch()
+            if let assembled = closeLiveMessage() {
                 await publish(.messageUpserted(assembled))
-                liveMessageID = nil
-                liveParts = []
             }
             if let errorMessage = message["errorMessage"]?.stringValue,
                 message["stopReason"]?.stringValue == "error"
@@ -796,7 +871,12 @@ actor OmpSession {
                 tool.status = isError ? .error : .completed
                 tool.output = String(output.prefix(10_000))
             }
+            await publishTool(at: index)
+            let partsBefore = liveParts.count
             await attachResultFiles(frame, toolCallID: toolCallID)
+            if liveParts.count != partsBefore {
+                await publishLiveSnapshot(force: true)
+            }
         }
     }
 
@@ -960,9 +1040,12 @@ extension OmpSession {
             externallyLive = false
             return
         }
-        let loaded = TranscriptLoader.load(sessionFile: file)
+        let mtime = TranscriptLoader.mtime(file)
         let threshold = Date().addingTimeInterval(-Self.externalActivityWindow)
-        externallyLive = (loaded.updatedAt ?? .distantPast) > threshold
+        externallyLive = (mtime ?? .distantPast) > threshold
+        guard mtime != lastTranscriptMtime else { return }
+        lastTranscriptMtime = mtime
+        let loaded = TranscriptLoader.load(sessionFile: file)
         if loaded.messages.count != messages.count {
             await adoptExternally(loaded: loaded, ompID: loaded.sessionID)
             touch()

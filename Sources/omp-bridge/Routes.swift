@@ -270,7 +270,6 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     router.get("analytics") { request, _ in
         let days = Int(request.uri.queryParameters.get("days") ?? "") ?? 30
         var live: [OmpSession] = []
-        for (_, id) in (await app.currentSummaries()) { _ = id }
         for sessionID in await app.liveSessionIDs() {
             if let session = await app.liveSession(id: sessionID) { live.append(session) }
         }
@@ -590,6 +589,10 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
                     for await frame in attachment.stream {
                         if case .session(let frameID, let event) = frame.event, frameID == id {
                             try await write(event)
+                        } else if case .heartbeat = frame.event {
+                            var buffer = ByteBuffer()
+                            buffer.writeString(": hb\n\n")
+                            try await writer.write(buffer)
                         }
                     }
                 } onGracefulShutdown: {

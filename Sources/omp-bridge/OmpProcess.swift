@@ -108,6 +108,7 @@ actor OmpProcess {
     private var process: Process?
     private var stdinHandle: FileHandle?
     private var pending: [String: CheckedContinuation<OmpRPCResponse, Never>] = [:]
+    private var timeouts: [String: Task<Void, Never>] = [:]
     private var chunks: [String: (count: Int, parts: [Int: Data], bytes: Int)] = [:]
     private var reassemblyLimit = 67_108_864
     private(set) var protocolVersion = 1
@@ -164,11 +165,18 @@ actor OmpProcess {
         }
     }
 
+    var processID: Int? {
+        process.map { Int($0.processIdentifier) }
+    }
+
     private func terminated() {
         guard isRunning else { return }
         isRunning = false
+        negotiated = true
         let waiters = pending
         pending.removeAll()
+        for task in timeouts.values { task.cancel() }
+        timeouts.removeAll()
         for (_, continuation) in waiters {
             continuation.resume(
                 returning: OmpRPCResponse(
@@ -177,13 +185,13 @@ actor OmpProcess {
         }
     }
 
-    func stop() {
+    func stop() async {
         guard let process, isRunning else { return }
         try? stdinHandle?.close()
         stdinHandle = nil
         let deadline = Date().addingTimeInterval(10)
         while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.1)
+            try? await Task.sleep(for: .milliseconds(100))
         }
         if process.isRunning { process.terminate() }
         isRunning = false
@@ -204,8 +212,8 @@ actor OmpProcess {
                     "type": "negotiate_protocol",
                     "protocolVersion": 2,
                 ])
-                negotiated = true
             }
+            negotiated = true
         case "rpc_chunk":
             reassemble(value)
         case "response":
@@ -216,22 +224,11 @@ actor OmpProcess {
                 errorCode: value["code"]?.stringValue,
                 data: value["data"])
             if let id = value["id"]?.stringValue, let continuation = pending.removeValue(forKey: id) {
+                timeouts.removeValue(forKey: id)?.cancel()
                 continuation.resume(returning: response)
             }
-        case .some(let kind):
-            if kind == "extension_ui_request" || kind == "host_tool_call"
-                || kind == "host_uri_request" || kind.hasSuffix("_lifecycle")
-                || kind.hasSuffix("_progress") || kind.hasSuffix("_event")
-                || kind == "notice" || kind == "prompt_result" || kind == "command_output"
-                || kind == "available_commands_update" || kind == "extension_error"
-                || kind.hasPrefix("agent_") || kind.hasPrefix("turn_")
-                || kind.hasPrefix("message_") || kind.hasPrefix("tool_execution_")
-                || kind.hasPrefix("auto_compaction_") || kind.hasPrefix("auto_retry_")
-                || kind == "model_changed" || kind == "thinking_level_changed" {
-                await onEvent(value)
-            } else {
-                await onEvent(value)
-            }
+        case .some:
+            await onEvent(value)
         case nil:
             break
         }
@@ -307,9 +304,11 @@ actor OmpProcess {
         }
         let response = await withCheckedContinuation { (continuation: CheckedContinuation<OmpRPCResponse, Never>) in
             pending[id] = continuation
-            Task {
+            timeouts[id] = Task {
                 try? await Task.sleep(for: .seconds(timeout))
+                guard !Task.isCancelled else { return }
                 if let timedOut = self.pending.removeValue(forKey: id) {
+                    self.timeouts.removeValue(forKey: id)
                     timedOut.resume(
                         returning: OmpRPCResponse(
                             command: type, success: false, error: "Timed out", errorCode: "timeout",

@@ -94,7 +94,7 @@ actor AuthFlow {
             }
         }
         for _ in 0..<50 {
-            if let url = pendingURL {
+            if pendingURL != nil {
                 return await status()
             }
             try? await Task.sleep(for: .milliseconds(200))

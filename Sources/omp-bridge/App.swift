@@ -27,6 +27,8 @@ actor App {
     private var version = "unknown"
     private var interruptedBySession: [String: Interruption] = [:]
     private var ownedTranscriptsBySession: [String: Set<String>] = [:]
+    private let discoveryCache = DiscoveryCache()
+    private var lastStoredAt: [String: Date] = [:]
 
     init(config: Config) {
         self.config = config
@@ -65,7 +67,7 @@ actor App {
             directory: resolved,
             model: model.flatMap { $0.isEmpty ? nil : $0 } ?? config.defaultModel ?? "",
             effort: effort ?? config.defaultEffort,
-            config: config, hub: hub, quietRegistry: quietRegistry)
+            config: config, hub: hub, quietRegistry: quietRegistry, journal: journal)
         sessions[session.id] = session
         return session
     }
@@ -81,7 +83,8 @@ actor App {
         let claimedFiles = await claimedFiles()
         let hidden = await store.hiddenList()
         let found = Discovery.scan(
-            root: config.ompSessionsRoot, hidden: hidden, claimedFiles: claimedFiles)
+            root: config.ompSessionsRoot, hidden: hidden, claimedFiles: claimedFiles,
+            cache: discoveryCache)
         let match = found.first(where: { $0.ompSessionID == wanted })
         guard let match, match.directory.map({ !Discovery.isJunkDirectory($0) }) ?? true else {
             return nil
@@ -96,7 +99,8 @@ actor App {
             directory: adopted.cwd ?? config.workdir,
             model: config.defaultModel ?? "",
             effort: config.defaultEffort,
-            ompSessionFile: file, config: config, hub: hub, quietRegistry: quietRegistry)
+            ompSessionFile: file, config: config, hub: hub, quietRegistry: quietRegistry,
+            journal: journal)
         await session.adoptExternally(loaded: adopted, ompID: ompID)
         sessions[session.id] = session
         ownedTranscriptsBySession[session.id] = Set(await session.ownedTranscriptIDs())
@@ -113,6 +117,7 @@ actor App {
             _ = await store.remove(id)
         }
         lastSummaries.removeValue(forKey: id)
+        lastStoredAt.removeValue(forKey: id)
         await hub.publish(.listRemove(id: id))
     }
 
@@ -131,7 +136,7 @@ actor App {
             model: await source.modelName(),
             effort: await source.effortLevel(),
             ompSessionFile: FileManager.default.fileExists(atPath: copyPath) ? copyPath : nil,
-            config: config, hub: hub, quietRegistry: quietRegistry)
+            config: config, hub: hub, quietRegistry: quietRegistry, journal: journal)
         if FileManager.default.fileExists(atPath: copyPath) {
             let loaded = TranscriptLoader.load(sessionFile: copyPath)
             await session.adoptExternally(loaded: loaded, ompID: nil)
@@ -150,7 +155,8 @@ actor App {
         let claimedFiles = await claimedFiles()
         let hidden = await hiddenIDs()
         let discovered = Discovery.scan(
-            root: config.ompSessionsRoot, hidden: hidden, claimedFiles: claimedFiles)
+            root: config.ompSessionsRoot, hidden: hidden, claimedFiles: claimedFiles,
+            cache: discoveryCache)
         for item in discovered {
             byID[item.ompSessionID] = SessionSummary(
                 id: item.ompSessionID, title: item.title, directory: item.directory,
@@ -189,6 +195,9 @@ actor App {
         lastSummaries = current
         for (_, session) in sessions {
             await session.refreshFromTranscriptIfIdle()
+            let updatedAt = await session.updatedDate()
+            guard lastStoredAt[session.id] != updatedAt else { continue }
+            lastStoredAt[session.id] = updatedAt
             await store.upsert(await record(for: session))
         }
     }
@@ -239,7 +248,7 @@ actor App {
                 id: record.id, title: record.title,
                 directory: record.directory ?? config.workdir,
                 model: record.model, effort: record.effort, ompSessionFile: file,
-                config: config, hub: hub, quietRegistry: quietRegistry)
+                config: config, hub: hub, quietRegistry: quietRegistry, journal: journal)
             await session.adoptExternally(loaded: TranscriptLoader.load(sessionFile: file), ompID: record.ompSessionID)
             sessions[record.id] = session
             ownedTranscriptsBySession[record.id] = Set(await session.ownedTranscriptIDs())
