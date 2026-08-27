@@ -58,7 +58,8 @@ and writes a systemd --user unit (Linux) or launchd plist (macOS). Config lives 
 
 The bridge refuses to start without `OMP_PASSWORD`: omp runs tools with full permissions by
 default, so an unauthenticated bridge is arbitrary code execution for anyone who can reach
-the port. Clients authenticate with HTTP Basic auth, username `omp`.
+the port. Clients authenticate with HTTP Basic auth; the password is what is checked, the
+username is convention (`omp`) and any value is accepted.
 
 ## Configuration
 

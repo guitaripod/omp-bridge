@@ -34,7 +34,7 @@ await app.prepare()
 
 let router = Router()
 if !config.password.isEmpty {
-    router.middlewares.add(BasicAuthMiddleware(username: "omp", password: config.password))
+    router.middlewares.add(BasicAuthMiddleware(password: config.password))
 }
 await registerRoutes(router, app: app, config: config)
 
@@ -64,23 +64,36 @@ do {
     throw error
 }
 
+/// Basic auth that verifies only the password. The username carries no secret — it is a client-side
+/// convention that names which bridge a profile thinks it is talking to ("omp", "claude",
+/// "opencode"), and clients shipped before this bridge existed retry with the wrong one. Rejecting
+/// a correct password over a label locks those clients out for nothing.
 struct BasicAuthMiddleware<Context: RequestContext>: RouterMiddleware {
-    private let expected: String
+    private let password: String
 
-    init(username: String, password: String) {
-        let raw = Data("\(username):\(password)".utf8).base64EncodedString()
-        expected = "Basic \(raw)"
+    init(password: String) {
+        self.password = password
     }
 
     func handle(
         _ request: Request, context: Context,
         next: (Request, Context) async throws -> Response
     ) async throws -> Response {
-        guard request.headers[.authorization] == expected else {
+        guard suppliedPassword(request) == password else {
             var headers = HTTPFields()
             headers[.wwwAuthenticate] = "Basic realm=\"omp-bridge\""
             return Response(status: .unauthorized, headers: headers)
         }
         return try await next(request, context)
+    }
+
+    private func suppliedPassword(_ request: Request) -> String? {
+        guard let header = request.headers[.authorization],
+            header.hasPrefix("Basic "),
+            let decoded = Data(base64Encoded: String(header.dropFirst(6))),
+            let pair = String(data: decoded, encoding: .utf8),
+            let separator = pair.firstIndex(of: ":")
+        else { return nil }
+        return String(pair[pair.index(after: separator)...])
     }
 }
