@@ -46,6 +46,7 @@ actor App {
             let described = Shell.run("git", ["describe", "--tags", "--always", "--dirty"], cwd: source)
             if !described.isEmpty { version = described.trimmingCharacters(in: .whitespacesAndNewlines) }
         }
+        await restorePersistedSessions()
         await recoverInterruptedTurns()
     }
 
@@ -228,6 +229,22 @@ actor App {
     }
 
     // MARK: interruptions
+    private func restorePersistedSessions() async {
+        for record in await store.allRecords() {
+            guard sessions[record.id] == nil else { continue }
+            guard let file = record.ompSessionFile,
+                FileManager.default.fileExists(atPath: file)
+            else { continue }
+            let session = OmpSession(
+                id: record.id, title: record.title,
+                directory: record.directory ?? config.workdir,
+                model: record.model, effort: record.effort, ompSessionFile: file,
+                config: config, hub: hub, quietRegistry: quietRegistry)
+            await session.adoptExternally(loaded: TranscriptLoader.load(sessionFile: file), ompID: record.ompSessionID)
+            sessions[record.id] = session
+            ownedTranscriptsBySession[record.id] = Set(await session.ownedTranscriptIDs())
+        }
+    }
 
     private func recoverInterruptedTurns() async {
         for entry in await journal.interruptedEntries() {
