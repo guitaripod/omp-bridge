@@ -29,7 +29,11 @@ enum TranscriptLoader {
             case "session":
                 result.sessionID = value["id"]?.stringValue
                 result.cwd = value["cwd"]?.stringValue
-                if let ts = value["timestamp"]?.stringValue { result.updatedAt = isoDate(ts) ?? result.updatedAt }
+                if let ts = value["timestamp"]?.stringValue, let parsed = isoDate(ts),
+                    result.updatedAt == nil || parsed > (result.updatedAt ?? .distantPast)
+                {
+                    result.updatedAt = parsed
+                }
             case "model_change":
                 if let model = value["model"]?.stringValue { result.model = model }
             case "thinking_level_change":
