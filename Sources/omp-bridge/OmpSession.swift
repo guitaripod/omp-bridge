@@ -600,9 +600,9 @@ actor OmpSession {
         case "thinking_start":
             liveParts.append(.reasoning(""))
         case "thinking_delta":
-            appendToLiveReasoning(event["delta"]?.stringValue ?? "")
-        case "thinking_end":
-            break
+            let delta = event["delta"]?.stringValue ?? ""
+            appendToLiveReasoning(delta)
+            await publish(.partTextDelta(messageID: messageID, delta: delta))
         case "toolcall_start":
             liveParts.append(
                 .tool(ToolCall(id: "pending-\(liveParts.count)", name: "", input: "", status: .running)))
@@ -753,8 +753,8 @@ actor OmpSession {
                 if tool.input.isEmpty { tool.input = args }
                 tool.status = .running
             }
+            await publishTool(at: index)
         }
-        await flushToolEvents()
     }
 
     private func handleExecutionUpdate(_ frame: JSONValue) async {
@@ -765,10 +765,10 @@ actor OmpSession {
         let output = texts.joined()
         if let index = indexOfToolPart(toolCallID) {
             updateToolPart(index: index) { tool in
-                tool.output = String(output.prefix(65_536))
+                tool.output = String(output.prefix(10_000))
             }
+            await publishTool(at: index)
         }
-        await flushToolEvents()
     }
 
     private func handleExecutionEnd(_ frame: JSONValue) async {
@@ -784,11 +784,10 @@ actor OmpSession {
         if let index = indexOfToolPart(toolCallID) {
             updateToolPart(index: index) { tool in
                 tool.status = isError ? .error : .completed
-                tool.output = String(output.prefix(131_072))
+                tool.output = String(output.prefix(10_000))
             }
+            await attachResultFiles(frame, toolCallID: toolCallID)
         }
-        await attachResultFiles(frame, toolCallID: toolCallID)
-        await flushToolEvents()
     }
 
     private func attachResultFiles(_ frame: JSONValue, toolCallID: String) async {
@@ -836,14 +835,12 @@ actor OmpSession {
         }
     }
 
-    private func flushToolEvents() async {
-        if let messageID = liveMessageID {
-            for part in liveParts {
-                if case .tool(let call) = part {
-                    await publishTool(call, messageID: messageID)
-                }
-            }
-        }
+    private func publishTool(at index: Int) async {
+        guard let messageID = liveMessageID,
+            liveParts.indices.contains(index),
+            case .tool(let call) = liveParts[index]
+        else { return }
+        await publish(.toolUpserted(messageID: messageID, call))
     }
 
     private func publishTool(_ call: ToolCall, messageID: String) async {

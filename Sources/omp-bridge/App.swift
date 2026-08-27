@@ -321,12 +321,26 @@ actor App {
     }
 
     private var cachedModels: (fetchedAt: Date, models: [JSONValue])?
+    private var failedModelsAt: Date?
+    private var modelFetchTask: Task<[JSONValue], Never>?
     private var modelScratchProcess: OmpProcess?
 
     func modelCatalog() async -> [JSONValue] {
         if let cached = cachedModels, Date().timeIntervalSince(cached.fetchedAt) < 300 {
             return cached.models
         }
+        if let failedAt = failedModelsAt, Date().timeIntervalSince(failedAt) < 60 {
+            return cachedModels?.models ?? []
+        }
+        if let inFlight = modelFetchTask { return await inFlight.value }
+        let task = Task { await self.fetchModelCatalog() }
+        modelFetchTask = task
+        let models = await task.value
+        modelFetchTask = nil
+        return models
+    }
+
+    private func fetchModelCatalog() async -> [JSONValue] {
         let process: OmpProcess
         if let existing = await modelScratchRunning() {
             process = existing
@@ -336,14 +350,18 @@ actor App {
                 try await created.start()
             } catch {
                 FileHandle.standardError.write(Data("models: scratch start failed: \(error)\n".utf8))
+                failedModelsAt = Date()
                 return []
             }
             process = created
             self.modelScratchProcess = created
         }
-        let response = await process.request("get_available_models", timeout: 30)
+        let response = await process.request("get_available_models", timeout: 120)
         guard response.success, let list = response.data?["models"]?.arrayValue else {
             FileHandle.standardError.write(Data("models: request failed: \(response.error ?? "unknown")\n".utf8))
+            failedModelsAt = Date()
+            await process.stop()
+            if modelScratchProcess === process { modelScratchProcess = nil }
             return []
         }
         let models = list.compactMap { entry -> JSONValue? in
@@ -356,10 +374,10 @@ actor App {
                         ?? id.split(separator: "/").first.map(String.init) ?? ""),
             ])
         }
+        failedModelsAt = nil
         cachedModels = (Date(), models)
         return models
     }
-
     private func modelScratchRunning() async -> OmpProcess? {
         guard let existing = modelScratchProcess, await existing.isRunning else {
             modelScratchProcess = nil

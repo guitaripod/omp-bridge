@@ -65,14 +65,20 @@ enum JSONValue: Sendable {
 
     static func from(_ any: Any) -> JSONValue {
         switch any {
-        case is NSNull: .null
-        case let b as Bool: .bool(b)
-        case let n as NSNumber: .number(n.doubleValue)
-        case let s as String: .string(s)
-        case let a as [Any]: .array(a.map { from($0) })
+        case is NSNull:
+            return .null
+        case let n as NSNumber:
+            let objCType = String(cString: n.objCType)
+            if objCType == "c" { return .bool(n.boolValue) }
+            return .number(n.doubleValue)
+        case let s as String:
+            return .string(s)
+        case let a as [Any]:
+            return .array(a.map { from($0) })
         case let o as [String: Any]:
-            .object(o.mapValues { from($0) })
-        default: .string(String(describing: any))
+            return .object(o.mapValues { from($0) })
+        default:
+            return .string(String(describing: any))
         }
     }
 
@@ -106,6 +112,7 @@ actor OmpProcess {
     private var reassemblyLimit = 67_108_864
     private(set) var protocolVersion = 1
     private(set) var isRunning = false
+    private var negotiated = false
     private var nextRequestID = 0
 
     init(
@@ -117,9 +124,9 @@ actor OmpProcess {
         self.extraEnv = extraEnv
         self.onEvent = onEvent
     }
-
-    func start() throws {
+    func start() async throws {
         guard !isRunning else { return }
+        negotiated = false
         let p = Process()
         p.executableURL = URL(fileURLWithPath: ompBin)
         p.arguments = ["--mode", "rpc"]
@@ -149,6 +156,11 @@ actor OmpProcess {
                 await channel?.ingest(JSONValue.from(obj))
             }
             await channel?.terminated()
+        }
+        let deadline = Date().addingTimeInterval(10)
+        while !negotiated, Date() < deadline {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(10))
         }
     }
 
@@ -180,7 +192,6 @@ actor OmpProcess {
     func ingest(_ value: JSONValue) async {
         await handleLine(value)
     }
-
     private func handleLine(_ value: JSONValue) async {
         switch value["type"]?.stringValue {
         case "ready":
@@ -193,6 +204,7 @@ actor OmpProcess {
                     "type": "negotiate_protocol",
                     "protocolVersion": 2,
                 ])
+                negotiated = true
             }
         case "rpc_chunk":
             reassemble(value)
