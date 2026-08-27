@@ -59,9 +59,6 @@ actor SessionStore {
         } else if let ompID = record?.ompSessionID {
             hidden.append(ompID)
         }
-        if let file = record?.ompSessionFile {
-            try? FileManager.default.removeItem(atPath: file)
-        }
         persistNow()
         return record
     }
