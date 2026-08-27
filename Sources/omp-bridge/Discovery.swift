@@ -48,6 +48,7 @@ enum Discovery {
             if claimedFiles.contains(path) { continue }
             guard let loaded = loadLight(path) else { continue }
             if let id = loaded.ompSessionID, hidden.contains(id) { continue }
+            if hidden.contains(file.replacingOccurrences(of: ".jsonl", with: "")) { continue }
             found.append(
                 DiscoveredSession(
                     ompSessionID: loaded.ompSessionID

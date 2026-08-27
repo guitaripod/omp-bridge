@@ -19,6 +19,7 @@ struct SessionRecord: Codable, Sendable {
     var lastTokens: Int?
     var interruption: Interruption?
     var autoResume: Bool?
+    var ownedTranscriptIDs: [String]?
 }
 
 actor SessionStore {
@@ -53,7 +54,11 @@ actor SessionStore {
 
     func remove(_ id: String) -> SessionRecord? {
         let record = records.removeValue(forKey: id)
-        if let ompID = record?.ompSessionID { hidden.append(ompID) }
+        if let owned = record?.ownedTranscriptIDs, !owned.isEmpty {
+            hidden.append(contentsOf: owned)
+        } else if let ompID = record?.ompSessionID {
+            hidden.append(ompID)
+        }
         if let file = record?.ompSessionFile {
             try? FileManager.default.removeItem(atPath: file)
         }

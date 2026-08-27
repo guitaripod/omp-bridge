@@ -26,6 +26,7 @@ actor App {
     private var lastSummaries: [String: SessionSummary] = [:]
     private var version = "unknown"
     private var interruptedBySession: [String: Interruption] = [:]
+    private var ownedTranscriptsBySession: [String: Set<String>] = [:]
 
     init(config: Config) {
         self.config = config
@@ -77,28 +78,33 @@ actor App {
     func adoptDiscovered(id wanted: String) async -> OmpSession? {
         if let live = sessions[wanted] { return live }
         let claimedFiles = await claimedFiles()
+        let hidden = await store.hiddenList()
         let found = Discovery.scan(
-            root: config.ompSessionsRoot, hidden: [], claimedFiles: claimedFiles)
-        guard let match = found.first(where: { $0.ompSessionID == wanted }) else { return nil }
+            root: config.ompSessionsRoot, hidden: hidden, claimedFiles: claimedFiles)
+        let match = found.first(where: { $0.ompSessionID == wanted })
+        guard let match, match.directory.map({ !Discovery.isJunkDirectory($0) }) ?? true else {
+            return nil
+        }
         return await adopt(file: match.file, ompID: match.ompSessionID)
     }
 
     func adopt(file: String, ompID: String?) async -> OmpSession {
-        let loaded = TranscriptLoader.load(sessionFile: file)
+        let adopted = TranscriptLoader.load(sessionFile: file)
         let session = OmpSession(
-            title: loaded.title ?? OmpSession.derivedTitle(from: loaded.firstUserText ?? "Session"),
-            directory: loaded.cwd ?? config.workdir,
+            title: adopted.title ?? OmpSession.derivedTitle(from: adopted.firstUserText ?? "Session"),
+            directory: adopted.cwd ?? config.workdir,
             model: config.defaultModel ?? "",
             effort: config.defaultEffort,
             ompSessionFile: file, config: config, hub: hub, quietRegistry: quietRegistry)
-        await session.adoptExternally(loaded: loaded, ompID: ompID)
-        sessions[session.id] = session
+        await session.adoptExternally(loaded: adopted, ompID: ompID)
+        ownedTranscriptsBySession[session.id] = Set(await session.ownedTranscriptIDs())
         return session
     }
 
     func deleteSession(id: String) async {
         if let session = sessions.removeValue(forKey: id) {
             await session.shutdown()
+            ownedTranscriptsBySession.removeValue(forKey: id)
             await store.remove(id)
         } else {
             _ = await store.remove(id)
@@ -183,6 +189,11 @@ actor App {
         }
     }
 
+    private func ownedTranscriptIDs(for session: OmpSession) -> [String]? {
+        guard let ids = ownedTranscriptsBySession[session.id], !ids.isEmpty else { return nil }
+        return ids.sorted()
+    }
+
     private func record(for session: OmpSession) async -> SessionRecord {
         SessionRecord(
             id: session.id,
@@ -202,7 +213,8 @@ actor App {
             lastCostUSD: await session.turnsSnapshot().last?.costUSD,
             lastTokens: await session.turnsSnapshot().last?.tokens.total,
             interruption: interruptedBySession[session.id],
-            autoResume: nil)
+            autoResume: nil,
+            ownedTranscriptIDs: ownedTranscriptIDs(for: session))
     }
 
     func flushAll() async {

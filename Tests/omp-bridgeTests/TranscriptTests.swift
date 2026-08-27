@@ -92,6 +92,35 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         #expect(await session.titleText() == "What is this repo?")
         #expect(await session.snapshotMessages().count == 1)
     }
+
+    @Test func deletedSessionStaysGoneAfterReopen() async throws {
+        let dir = makeTempDir("hide")
+        let ompID = "33333333-3333-7333-8333-333333333333"
+        let path = writeTranscript(dir, lines: [
+            #"{"type":"session","id":"\#(ompID)","cwd":"/tmp/deleted"}"#,
+            #"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"handoff prompt"}]}}"#,
+        ])
+        let store = SessionStore(path: dir + "/sessions.json")
+        var record = makeSession(directory: dir, file: path)
+        let loaded = TranscriptLoader.load(sessionFile: path)
+        await record.adoptExternally(loaded: loaded, ompID: nil)
+        let owned = await record.ownedTranscriptIDs()
+        #expect(owned.contains(ompID))
+        await store.upsert(
+            SessionRecord(
+                id: "bridge-session", title: "handoff prompt", directory: dir, model: "",
+                effort: "medium", createdAt: Date(), updatedAt: Date(), ompSessionID: ompID,
+                ompSessionFile: path, customTitle: false, autoTitled: true, turns: [],
+                totalCostUSD: 0, totalTokens: TokenCounts(), lastCostUSD: nil, lastTokens: nil,
+                interruption: nil, autoResume: nil, ownedTranscriptIDs: owned))
+        await store.remove("bridge-session")
+
+        let found = Discovery.scan(
+            root: dir, hidden: await store.hiddenList(), claimedFiles: [])
+        #expect(found.isEmpty)
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
 }
 
 @Suite struct SpendTests {

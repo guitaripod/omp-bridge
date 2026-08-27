@@ -914,6 +914,12 @@ extension OmpSession {
     func updatedDate() -> Date { updatedAt }
     func currentOmpSessionID() -> String? { ompSessionID }
 
+    func ownedTranscriptIDs() -> [String] {
+        var ids: Set<String> = [id]
+        if let ompSessionID { ids.insert(ompSessionID) }
+        return ids.sorted()
+    }
+
     func customTitleValue() -> Bool { customTitle }
     func autoTitledValue() -> Bool { autoTitled }
     func turnsSnapshot() -> [TurnRecord] { turns }
