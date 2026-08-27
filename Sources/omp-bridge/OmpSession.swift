@@ -944,6 +944,8 @@ extension OmpSession {
         messages = loaded.messages
         if let id = ompID ?? loaded.sessionID { ompSessionID = id }
         if let cwd = loaded.cwd { directory = cwd }
+        if let model = loaded.model, model != self.model { self.model = model }
+        if let effort = loaded.effort { self.effort = normalizeEffort(effort) }
         if let first = loaded.firstUserText, !customTitle {
             title = Self.derivedTitle(from: first)
             autoTitled = true

@@ -7,6 +7,8 @@ struct LoadedTranscript {
     var updatedAt: Date?
     var firstUserText: String?
     var messages: [Message] = []
+    var model: String?
+    var effort: String?
 }
 
 enum TranscriptLoader {
@@ -28,6 +30,10 @@ enum TranscriptLoader {
                 result.sessionID = value["id"]?.stringValue
                 result.cwd = value["cwd"]?.stringValue
                 if let ts = value["timestamp"]?.stringValue { result.updatedAt = isoDate(ts) ?? result.updatedAt }
+            case "model_change":
+                if let model = value["model"]?.stringValue { result.model = model }
+            case "thinking_level_change":
+                if let level = value["thinkingLevel"]?.stringValue { result.effort = level }
             case "title":
                 if let title = value["title"]?.stringValue, !title.isEmpty { result.title = title }
             case "message":
