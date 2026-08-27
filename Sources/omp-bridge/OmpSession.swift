@@ -961,8 +961,8 @@ extension OmpSession {
             return
         }
         let loaded = TranscriptLoader.load(sessionFile: file)
-        let window = Date().addingTimeInterval(Self.externalActivityWindow)
-        externallyLive = (loaded.updatedAt ?? .distantPast) > window
+        let threshold = Date().addingTimeInterval(-Self.externalActivityWindow)
+        externallyLive = (loaded.updatedAt ?? .distantPast) > threshold
         if loaded.messages.count != messages.count {
             await adoptExternally(loaded: loaded, ompID: loaded.sessionID)
             touch()
