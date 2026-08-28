@@ -988,6 +988,7 @@ actor OmpSession {
         let loaded = TranscriptLoader.load(sessionFile: file)
         if !loaded.messages.isEmpty {
             messages = loaded.messages
+            adoptSpend(from: loaded.messages)
             ompSessionID = loaded.sessionID
             if let first = loaded.firstUserText, !customTitle {
                 title = Self.derivedTitle(from: first)
@@ -997,6 +998,67 @@ actor OmpSession {
     }
 
     static let externalActivityWindow: TimeInterval = 180
+
+    /// The ledger of a transcript the bridge did not run — one started in a terminal, or one that
+    /// grew there while the bridge was idle — read off the usage every assistant message carries.
+    /// A turn is a prompt and everything the model said before the next one; its tokens are the
+    /// sum of those messages, its calls the tool calls among them, and its price what oh-my-pi
+    /// itself wrote beside each message. Without this a session adopted from disk priced at zero
+    /// and never moved, whatever the machine had spent.
+    private func adoptSpend(from messages: [Message]) {
+        turns = Self.turns(from: messages)
+        totalCostUSD = turns.reduce(0) { $0 + $1.costUSD }
+        totalTokens = turns.reduce(TokenCounts()) { $0 + $1.tokens }
+    }
+
+    static func turns(from messages: [Message]) -> [TurnRecord] {
+        var records: [TurnRecord] = []
+        var current: TurnRecord?
+        var lastAt: Date?
+        func close() {
+            guard var record = current else { return }
+            if let lastAt { record.seconds = lastAt.timeIntervalSince(record.at) }
+            records.append(record)
+            current = nil
+        }
+        for message in messages {
+            switch message.role {
+            case .user:
+                close()
+                let prompt = message.parts.compactMap { part -> String? in
+                    if case .text(let text) = part { return text }
+                    return nil
+                }.joined(separator: "\n")
+                current = TurnRecord(
+                    at: message.createdAt, seconds: nil, model: nil, calls: 0,
+                    tokens: TokenCounts(), costUSD: 0, prompt: prompt.isEmpty ? nil : prompt)
+                lastAt = nil
+            case .assistant:
+                if current == nil {
+                    current = TurnRecord(
+                        at: message.createdAt, seconds: nil, model: nil, calls: 0,
+                        tokens: TokenCounts(), costUSD: 0, prompt: nil)
+                }
+                if let model = message.model { current?.model = model }
+                if let usage = message.usage, let sum = current?.tokens { current?.tokens = sum + usage }
+                current?.costUSD += message.costUSD ?? 0
+                current?.calls += message.parts.filter {
+                    if case .tool = $0 { return true }
+                    return false
+                }.count
+                lastAt = message.createdAt
+            case .system:
+                continue
+            }
+        }
+        close()
+        return records.filter { $0.tokens.total > 0 || $0.costUSD > 0 || $0.calls > 0 }
+            .map { record in
+                var fixed = record
+                fixed.calls = max(fixed.calls, 1)
+                return fixed
+            }
+    }
 
     static func derivedTitle(from text: String) -> String {
         let line = text
@@ -1042,6 +1104,7 @@ extension OmpSession {
 
     func adoptExternally(loaded: LoadedTranscript, ompID: String?) async {
         messages = loaded.messages
+        adoptSpend(from: loaded.messages)
         if let id = ompID ?? loaded.sessionID { ompSessionID = id }
         if let cwd = loaded.cwd { directory = cwd }
         if let model = loaded.model, model != self.model { self.model = model }

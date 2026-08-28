@@ -39,6 +39,26 @@ import Testing
         #expect(OmpSession.serializeArguments(nil) == "{}")
     }
 
+    @Test func turnsFromAdoptedTranscript() {
+        let t0 = Date(timeIntervalSince1970: 1000)
+        let messages = [
+            Message(id: "u1", role: .user, parts: [.text("fix it")], createdAt: t0, seconds: nil, model: nil, usage: nil, costUSD: nil),
+            Message(id: "a1", role: .assistant, parts: [.tool(ToolCall(id: "c1", name: "read", input: "{}", status: .completed))], createdAt: t0.addingTimeInterval(2), seconds: nil, model: "m", usage: TokenCounts(input: 10, output: 5, cacheRead: 0, cacheWrite5m: 100, cacheWrite1h: 0), costUSD: 0.1),
+            Message(id: "a2", role: .assistant, parts: [.text("done")], createdAt: t0.addingTimeInterval(5), seconds: nil, model: "m", usage: TokenCounts(input: 1, output: 2, cacheRead: 100, cacheWrite5m: 0, cacheWrite1h: 0), costUSD: 0.05),
+            Message(id: "u2", role: .user, parts: [.text("thanks")], createdAt: t0.addingTimeInterval(9), seconds: nil, model: nil, usage: nil, costUSD: nil),
+            Message(id: "a3", role: .assistant, parts: [.text("np")], createdAt: t0.addingTimeInterval(10), seconds: nil, model: "m", usage: TokenCounts(input: 3, output: 1, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0), costUSD: 0.01),
+        ]
+        let turns = OmpSession.turns(from: messages)
+        #expect(turns.count == 2)
+        #expect(turns[0].prompt == "fix it")
+        #expect(turns[0].calls == 1)
+        #expect(turns[0].tokens.total == 218)
+        #expect(abs(turns[0].costUSD - 0.15) < 0.0001)
+        #expect(turns[0].seconds == 5)
+        #expect(turns[1].tokens.total == 4)
+        #expect(turns[1].calls == 1)
+    }
+
     @Test func derivedTitle() {
         #expect(OmpSession.derivedTitle(from: "Fix the bug") == "Fix the bug")
         #expect(OmpSession.derivedTitle(from: String(repeating: "x", count: 80)).count == 48)
