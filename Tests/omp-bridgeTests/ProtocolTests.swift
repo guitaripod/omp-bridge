@@ -43,5 +43,8 @@ import Testing
         #expect(OmpSession.derivedTitle(from: "Fix the bug") == "Fix the bug")
         #expect(OmpSession.derivedTitle(from: String(repeating: "x", count: 80)).count == 48)
         #expect(OmpSession.derivedTitle(from: "") == "New chat")
+        #expect(OmpSession.isPlaceholderTitle("New chat"))
+        #expect(OmpSession.isPlaceholderTitle("  "))
+        #expect(!OmpSession.isPlaceholderTitle("Fix the bug"))
     }
 }

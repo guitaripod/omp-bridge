@@ -138,6 +138,22 @@ actor OmpSession {
         return (turn.costUSD, turn.tokens.total)
     }
 
+    /// A conversation names itself after the first thing said in it. A session the bridge started
+    /// used to keep its placeholder forever — only a transcript adopted from disk derived a title —
+    /// so every chat opened from a client listed as a new one however long it had run.
+    private func titleFromFirstPrompt(_ text: String) {
+        guard !customTitle, !autoTitled, Self.isPlaceholderTitle(title) else { return }
+        let derived = Self.derivedTitle(from: text)
+        guard derived != "New chat" else { return }
+        title = derived
+        autoTitled = true
+    }
+
+    static func isPlaceholderTitle(_ title: String) -> Bool {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "New chat" || trimmed.hasPrefix("New session")
+    }
+
     func rename(_ newTitle: String) {
         title = newTitle
         customTitle = true
@@ -274,6 +290,7 @@ actor OmpSession {
             parts: userParts, createdAt: Date(), seconds: nil, model: nil, usage: nil,
             costUSD: nil)
         messages.append(userMessage)
+        titleFromFirstPrompt(shown ?? text)
         touch()
         await publish(.messageUpserted(userMessage))
 
