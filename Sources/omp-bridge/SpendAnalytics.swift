@@ -50,9 +50,15 @@ enum SpendAnalytics {
     }
 }
 
+/// The report every client reads, in the shape claude-bridge publishes and the Kit decodes:
+/// token counts are always the five-tier object, never a flat total, and a record names the
+/// thing that set it — the day with its money and turns, the conversation with its id and
+/// title, the turn with its prompt — rather than a bare number. A flat schema here decoded as
+/// nothing on the phone, and a bridge that answers 200 with a body the client cannot read is
+/// reported as a machine too old to have the route.
 struct AnalyticsTotalsDTO: Codable, Sendable {
     var costUSD: Double
-    var tokens: Int
+    var tokens: TokenCounts
     var turns: Int
     var toolCalls: Int
     var sessions: Int
@@ -62,7 +68,7 @@ struct AnalyticsTotalsDTO: Codable, Sendable {
 struct AnalyticsDayDTO: Codable, Sendable {
     var day: String
     var costUSD: Double
-    var tokens: Int
+    var tokens: TokenCounts
     var turns: Int
     var toolCalls: Int
     var sessions: Int
@@ -74,7 +80,7 @@ struct AnalyticsProjectDTO: Codable, Sendable {
     var sessions: Int
     var turns: Int
     var costUSD: Double
-    var tokens: Int
+    var tokens: TokenCounts
 }
 
 struct AnalyticsToolDTO: Codable, Sendable {
@@ -89,16 +95,38 @@ struct AnalyticsCompactionsDTO: Codable, Sendable {
 
 struct AnalyticsSubagentsDTO: Codable, Sendable {
     var runs: Int
-    var tokens: Int
+    var tokens: TokenCounts
     var costUSD: Double
 }
 
 struct AnalyticsRecordsDTO: Codable, Sendable {
-    var busiestDay: String?
-    var priciestSession: String?
-    var priciestTurn: Double?
-    var longestTurn: Double?
-    var streakDays: Int?
+    struct BusiestDay: Codable, Sendable {
+        var day: String
+        var costUSD: Double
+        var turns: Int
+    }
+
+    struct Session: Codable, Sendable {
+        var id: String
+        var title: String
+        var costUSD: Double
+        var turns: Int
+    }
+
+    struct Turn: Codable, Sendable {
+        var at: Date
+        var costUSD: Double
+        var seconds: Double?
+        var model: String?
+        var prompt: String?
+        var sessionTitle: String?
+    }
+
+    var busiestDay: BusiestDay?
+    var priciestSession: Session?
+    var priciestTurn: Turn?
+    var longestTurn: Turn?
+    var streakDays: Int
 }
 
 struct UsageAnalyticsReportDTO: Codable, Sendable {
@@ -131,27 +159,36 @@ enum AnalyticsBuilder {
             var toolCalls = 0
             var seconds: Double?
             var prompt: String?
+            var sessionTitle: String
+        }
+        struct ProjectFacts {
+            var sessions = 0
+            var turns = 0
+            var costUSD = 0.0
+            var tokens = TokenCounts()
         }
 
-        var perDirectory: [String: (sessions: Int, turns: Int, costUSD: Double, tokens: Int)] = [:]
+        var perDirectory: [String: ProjectFacts] = [:]
         var allTurns: [TurnFacts] = []
         var toolCounts: [String: Int] = [:]
         var sessionCount = 0
+        var priciestSession: AnalyticsRecordsDTO.Session?
 
-        func absorb(messages: [Message], turns: [TurnRecord], directory: String?) {
-            sessionCount += 1
+        func absorb(
+            id: String, title: String, messages: [Message], turns: [TurnRecord], directory: String?
+        ) {
             let dir = directory ?? "unknown"
-            var entry =
-                perDirectory[dir]
-                ?? (sessions: 0, turns: 0, costUSD: 0.0, tokens: 0)
-            entry.sessions += 1
+            var entry = perDirectory[dir] ?? ProjectFacts()
+            var sessionCost = 0.0
+            var sessionTurns = 0
+            var sessionTokens = TokenCounts()
 
             if !turns.isEmpty {
                 for turn in turns where turn.at >= since {
-                    entry.turns += 1
-                    entry.costUSD += turn.costUSD
-                    entry.tokens += turn.tokens.total
-                    var facts = TurnFacts(at: turn.at, model: turn.model)
+                    sessionTurns += 1
+                    sessionCost += turn.costUSD
+                    sessionTokens = sessionTokens + turn.tokens
+                    var facts = TurnFacts(at: turn.at, model: turn.model, sessionTitle: title)
                     facts.tokens = turn.tokens
                     facts.costUSD = turn.costUSD
                     facts.toolCalls = max(turn.calls - 1, 0)
@@ -165,8 +202,8 @@ enum AnalyticsBuilder {
                     switch message.role {
                     case .user:
                         openTurn = true
-                        entry.turns += 1
-                        var facts = TurnFacts(at: message.createdAt, model: nil)
+                        sessionTurns += 1
+                        var facts = TurnFacts(at: message.createdAt, model: nil, sessionTitle: title)
                         facts.prompt = message.parts.compactMap { part in
                             if case .text(let text) = part { return text }
                             return nil
@@ -174,8 +211,11 @@ enum AnalyticsBuilder {
                         allTurns.append(facts)
                     case .assistant:
                         if openTurn, let index = allTurns.indices.last {
-                            allTurns[index].tokens = allTurns[index].tokens + (message.usage ?? TokenCounts())
+                            let usage = message.usage ?? TokenCounts()
+                            allTurns[index].tokens = allTurns[index].tokens + usage
                             allTurns[index].costUSD += message.costUSD ?? 0
+                            sessionTokens = sessionTokens + usage
+                            sessionCost += message.costUSD ?? 0
                             for part in message.parts {
                                 if case .tool(let call) = part {
                                     allTurns[index].toolCalls += 1
@@ -189,13 +229,23 @@ enum AnalyticsBuilder {
                     }
                 }
             }
+            guard sessionTurns > 0 else { return }
+            sessionCount += 1
+            entry.sessions += 1
+            entry.turns += sessionTurns
+            entry.costUSD += sessionCost
+            entry.tokens = entry.tokens + sessionTokens
             perDirectory[dir] = entry
+            if sessionCost > (priciestSession?.costUSD ?? 0) {
+                priciestSession = AnalyticsRecordsDTO.Session(
+                    id: id, title: title, costUSD: sessionCost, turns: sessionTurns)
+            }
         }
 
         for session in liveSessions {
             await absorb(
-                messages: session.snapshotMessages(), turns: session.turnsSnapshot(),
-                directory: session.directoryPath())
+                id: session.id, title: session.titleText(), messages: session.snapshotMessages(),
+                turns: session.turnsSnapshot(), directory: session.directoryPath())
         }
 
         let hidden: [String] = []
@@ -209,7 +259,9 @@ enum AnalyticsBuilder {
         }()
         for item in discovered where claimedLiveFiles.contains(item.file) == false && item.updatedAt >= since {
             let loaded = TranscriptLoader.load(sessionFile: item.file)
-            absorb(messages: loaded.messages, turns: [], directory: loaded.cwd)
+            absorb(
+                id: loaded.sessionID ?? item.file, title: loaded.title ?? item.title,
+                messages: loaded.messages, turns: [], directory: loaded.cwd)
         }
 
         var dailyMap: [String: AnalyticsDayDTO] = [:]
@@ -218,12 +270,16 @@ enum AnalyticsBuilder {
         var hourTurns = Array(repeating: 0, count: 24)
         var hourCost = Array(repeating: 0.0, count: 24)
         var byModel: [String: SpendModelDTO] = [:]
+        var priciestTurn: TurnFacts?
+        var longestTurn: TurnFacts?
 
         for turn in allTurns {
             let key = dayFormatter.string(from: turn.at)
-            var day = dailyMap[key] ?? AnalyticsDayDTO(day: key, costUSD: 0, tokens: 0, turns: 0, toolCalls: 0, sessions: 0)
+            var day = dailyMap[key]
+                ?? AnalyticsDayDTO(
+                    day: key, costUSD: 0, tokens: TokenCounts(), turns: 0, toolCalls: 0, sessions: 0)
             day.costUSD += turn.costUSD
-            day.tokens += turn.tokens.total
+            day.tokens = day.tokens + turn.tokens
             day.turns += 1
             day.toolCalls += turn.toolCalls
             dailyMap[key] = day
@@ -235,16 +291,17 @@ enum AnalyticsBuilder {
             entry.tokens = entry.tokens + turn.tokens
             entry.costUSD += turn.costUSD
             byModel[modelKey] = entry
+            if turn.costUSD > (priciestTurn?.costUSD ?? 0) { priciestTurn = turn }
+            if let seconds = turn.seconds, seconds > (longestTurn?.seconds ?? 0) { longestTurn = turn }
         }
         let sortedDays = dailyMap.values.sorted { $0.day < $1.day }
-        let totalTokens = allTurns.reduce(0) { $0 + $1.tokens.total }
+        let totalTokens = allTurns.reduce(TokenCounts()) { $0 + $1.tokens }
         let totalCost = allTurns.reduce(0) { $0 + $1.costUSD }
         let totalTools = allTurns.reduce(0) { $0 + $1.toolCalls }
         let activeDays = dailyMap.count
-        let busiest = sortedDays.max { $0.turns < $1.turns }?.day
-        let priciestSession = perDirectory.max { $0.value.costUSD < $1.value.costUSD }?.key
-        let priciestTurn = allTurns.map(\.costUSD).max()
-        let longestTurn = allTurns.compactMap(\.seconds).max()
+        let busiest = sortedDays.max { $0.costUSD < $1.costUSD }.map {
+            AnalyticsRecordsDTO.BusiestDay(day: $0.day, costUSD: $0.costUSD, turns: $0.turns)
+        }
 
         var streak = 0
         if !sortedDays.isEmpty {
@@ -258,6 +315,12 @@ enum AnalyticsBuilder {
                 }
                 cursor = calendar.date(byAdding: .day, value: -1, to: cursor) ?? cursor
             }
+        }
+
+        func record(_ turn: TurnFacts) -> AnalyticsRecordsDTO.Turn {
+            AnalyticsRecordsDTO.Turn(
+                at: turn.at, costUSD: turn.costUSD, seconds: turn.seconds, model: turn.model,
+                prompt: turn.prompt, sessionTitle: turn.sessionTitle)
         }
 
         return UsageAnalyticsReportDTO(
@@ -280,10 +343,11 @@ enum AnalyticsBuilder {
             hourTurns: hourTurns, hourCostUSD: hourCost,
             cacheSavedUSD: 0,
             compactions: AnalyticsCompactionsDTO(count: 0, reclaimedTokens: 0),
-            subagents: AnalyticsSubagentsDTO(runs: 0, tokens: 0, costUSD: 0),
+            subagents: AnalyticsSubagentsDTO(runs: 0, tokens: TokenCounts(), costUSD: 0),
             records: AnalyticsRecordsDTO(
                 busiestDay: busiest, priciestSession: priciestSession,
-                priciestTurn: priciestTurn, longestTurn: longestTurn, streakDays: streak))
+                priciestTurn: priciestTurn.map(record), longestTurn: longestTurn.map(record),
+                streakDays: streak))
     }
 }
 
