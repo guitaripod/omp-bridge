@@ -273,7 +273,7 @@ actor OmpSession {
                         compaction: true))
                 return (true, position)
             }
-            try await startCompaction(instructions: instructions.isEmpty ? nil : instructions)
+            Task { try? await startCompaction(instructions: instructions.isEmpty ? nil : instructions) }
             return (false, nil)
         }
 
