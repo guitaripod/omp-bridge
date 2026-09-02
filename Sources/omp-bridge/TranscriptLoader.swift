@@ -40,6 +40,8 @@ enum TranscriptLoader {
                 if let level = value["thinkingLevel"]?.stringValue { result.effort = level }
             case "title":
                 if let title = value["title"]?.stringValue, !title.isEmpty { result.title = title }
+            case "compaction":
+                result.messages.append(seam(value, trigger: nil))
             case "message":
                 guard let message = value["message"], let role = message["role"]?.stringValue else { continue }
                 let timestamp =
@@ -128,6 +130,42 @@ enum TranscriptLoader {
             }
         }
         return result
+    }
+
+    /// The seam a compaction entry leaves in the transcript: the summary the model now carries
+    /// in place of everything above it, and what the context measured on either side. oh-my-pi
+    /// writes the entry once the compaction has landed, so a transcript read from disk carries
+    /// every seam a person ever saw, and the live bridge appends the same message the moment its
+    /// own compaction returns — the two roads must agree on the id, or a restart draws it twice.
+    static func seam(_ value: JSONValue, trigger: String?) -> Message {
+        let entryID = value["id"]?.stringValue ?? UUID().uuidString
+        let summary = value["summary"]?.stringValue
+        return Message(
+            id: "c-\(entryID)", role: .assistant,
+            parts: [
+                .compaction(
+                    Compaction(
+                        trigger: trigger,
+                        tokensBefore: value["tokensBefore"]?.intValue,
+                        tokensAfter: value["tokensAfter"]?.intValue,
+                        durationMs: nil, preservedMessages: nil,
+                        summary: summary?.isEmpty == true ? nil : summary))
+            ],
+            createdAt: isoDate(value["timestamp"]?.stringValue ?? "") ?? Date(), seconds: nil,
+            model: nil, usage: nil, costUSD: nil)
+    }
+
+    /// The newest compaction entry in a transcript, read fresh from disk because the seam is
+    /// written by oh-my-pi after its RPC has already answered.
+    static func lastCompaction(inFile sessionFile: String) -> JSONValue? {
+        guard let raw = FileManager.default.contents(atPath: sessionFile) else { return nil }
+        var last: JSONValue?
+        for line in raw.split(separator: UInt8(0x0A)) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) else { continue }
+            let value = JSONValue.from(obj)
+            if value["type"]?.stringValue == "compaction" { last = value }
+        }
+        return last
     }
 
     private static func blocks(_ value: JSONValue?) -> [JSONValue] {

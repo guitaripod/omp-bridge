@@ -5,6 +5,7 @@ struct QueuedPrompt: Codable, Sendable {
     var displayPrompt: String
     var model: String?
     var effort: String?
+    var compaction: Bool?
 }
 
 struct TurnRecord: Codable, Sendable {
@@ -60,6 +61,8 @@ actor OmpSession {
     private(set) var running = false
     private(set) var externallyLive = false
     private(set) var compacting = false
+    private var compactionStartedAt: Date?
+    private var lastEventAt = Date.distantPast
     private var queued: [QueuedPrompt] = []
     private var turns: [TurnRecord] = []
     private(set) var totalCostUSD = 0.0
@@ -254,9 +257,22 @@ actor OmpSession {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw BridgeError.badRequest("Empty message") }
 
+        if running { await healDeadTurn() }
+
         if text.hasPrefix("/compact") {
             let instructions =
                 text.dropFirst("/compact".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !compacting else {
+                throw BridgeError.conflict("A compaction is already running")
+            }
+            if running || !queued.isEmpty {
+                let position = queued.count
+                queued.append(
+                    QueuedPrompt(
+                        prompt: instructions, displayPrompt: text, model: nil, effort: nil,
+                        compaction: true))
+                return (true, position)
+            }
             try await startCompaction(instructions: instructions.isEmpty ? nil : instructions)
             return (false, nil)
         }
@@ -294,13 +310,31 @@ actor OmpSession {
         touch()
         await publish(.messageUpserted(userMessage))
 
-        if running {
+        if running || compacting || !queued.isEmpty {
             let position = queued.count
             queued.append(QueuedPrompt(prompt: promptText, displayPrompt: shown ?? text, model: wantModel, effort: wantEffort))
             return (true, position)
         }
         try await startTurn(prompt: promptText, display: shown ?? text)
         return (false, nil)
+    }
+
+    /// How long a turn may go without a word from the engine before its liveness is questioned.
+    private static let turnSilence: TimeInterval = 20
+
+    /// A turn the engine has already dropped must not keep this session busy: oh-my-pi aborts
+    /// the active turn for a manual compaction and can end a turn without a terminal
+    /// `agent_end`, and a session that believes it is running queues every later prompt behind
+    /// a turn that will never yield. When the engine has been silent for a while and says it is
+    /// not streaming, the turn is closed here so the next prompt starts instead of waiting.
+    private func healDeadTurn() async {
+        guard running, pendingUI == nil,
+            Date().timeIntervalSince(lastEventAt) > Self.turnSilence,
+            let process
+        else { return }
+        let state = await process.request("get_state", timeout: 10)
+        guard let data = state.data, data["isStreaming"]?.boolValue == false else { return }
+        finishTurn()
     }
 
     private func startTurn(prompt: String, display: String) async throws {
@@ -361,30 +395,86 @@ actor OmpSession {
         touch()
     }
 
+    /// A manual compaction, run only between turns: oh-my-pi's `compact` aborts whatever turn
+    /// is active, so `send` queues the request behind a running one rather than calling this.
+    /// The seam is appended to the transcript before the finish is announced, because the
+    /// clients hold a "compacting" card until the seam they were promised is among the rows.
     func startCompaction(instructions: String?) async throws {
         guard !compacting else {
             throw BridgeError.conflict("A compaction is already running")
         }
+        guard !running else {
+            throw BridgeError.conflict("A turn is running")
+        }
         let proc = try await ensureProcess()
         compacting = true
+        let startedAt = Date()
+        compactionStartedAt = startedAt
         await quietRegistry.increment()
         await publish(.compaction(phase: "started", error: nil))
         var fields: [String: Any] = [:]
         if let instructions, !instructions.isEmpty { fields["customInstructions"] = instructions }
         let response = await proc.request("compact", fields: fields, timeout: 900)
         compacting = false
+        compactionStartedAt = nil
         await quietRegistry.decrement()
         if response.success {
+            await recordCompaction(trigger: "manual", result: response.data, startedAt: startedAt)
             await publish(.compaction(phase: "finished", error: nil))
         } else {
             await publish(.compaction(phase: "failed", error: response.error))
         }
+        await drainQueue()
+    }
+
+    /// How many times, and how far apart, the transcript is re-read for the seam oh-my-pi
+    /// writes after its compaction has answered.
+    private static let seamReads = 8
+    private static let seamReadGap: Duration = .milliseconds(250)
+
+    /// Puts the seam a compaction just left into the transcript and on the wire. The entry in
+    /// oh-my-pi's own file is the authority — it alone knows the size the context shrank to —
+    /// and the RPC result stands in when the file has not been written yet, so a compaction
+    /// that succeeded never finishes without a seam.
+    private func recordCompaction(trigger: String, result: JSONValue?, startedAt: Date) async {
+        var entry: JSONValue?
+        if let file = ompSessionFile {
+            for attempt in 0..<Self.seamReads {
+                if let found = TranscriptLoader.lastCompaction(inFile: file),
+                    !messages.contains(where: { $0.id == "c-\(found["id"]?.stringValue ?? "")" })
+                {
+                    entry = found
+                    break
+                }
+                if attempt + 1 < Self.seamReads { try? await Task.sleep(for: Self.seamReadGap) }
+            }
+        }
+        var seam: Message
+        if let entry {
+            seam = TranscriptLoader.seam(entry, trigger: trigger)
+        } else if let result {
+            seam = TranscriptLoader.seam(result, trigger: trigger)
+        } else {
+            seam = TranscriptLoader.seam(JSONValue.from([String: Any]()), trigger: trigger)
+        }
+        if case .compaction(var compaction) = seam.parts[0] {
+            compaction.durationMs = Date().timeIntervalSince(startedAt) * 1000
+            seam.parts[0] = .compaction(compaction)
+        }
+        seam.createdAt = Date()
+        messages.append(seam)
+        touch()
+        await publish(.messageUpserted(seam))
     }
 
     private func drainQueue() async {
-        guard !running, !queued.isEmpty else { return }
+        guard !running, !compacting, !queued.isEmpty else { return }
         let next = queued.removeFirst()
         do {
+            if next.compaction == true {
+                try await startCompaction(instructions: next.prompt.isEmpty ? nil : next.prompt)
+                return
+            }
             if let wantEffort = next.effort, normalizeEffort(wantEffort) != effort {
                 effort = normalizeEffort(wantEffort)
                 let proc = try await ensureProcess()
@@ -592,6 +682,7 @@ actor OmpSession {
 
     func handleOmpEvent(_ frame: JSONValue) async {
         let type = frame["type"]?.stringValue ?? ""
+        lastEventAt = Date()
         switch type {
         case "agent_start":
             running = true
@@ -613,15 +704,22 @@ actor OmpSession {
         case "auto_compaction_start":
             if frame["skipped"]?.boolValue != true {
                 compacting = true
+                compactionStartedAt = Date()
                 await publish(.compaction(phase: "started", error: nil))
             }
         case "auto_compaction_end":
             if frame["skipped"]?.boolValue == true { break }
             compacting = false
+            let startedAt = compactionStartedAt ?? Date()
+            compactionStartedAt = nil
             let failed = frame["aborted"]?.boolValue == true
+            if !failed {
+                await recordCompaction(trigger: "auto", result: frame["result"], startedAt: startedAt)
+            }
             await publish(
                 .compaction(phase: failed ? "failed" : "finished",
                             error: failed ? "Aborted" : nil))
+            if !running { await drainQueue() }
         case "extension_ui_request":
             await handleUIRequest(frame)
         case "notice":

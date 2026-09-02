@@ -162,4 +162,25 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         #expect(report.byModel.first?.turns == 2)
         #expect(abs(report.costUSD - 1.0) < 0.0001 || true)
     }
+
+    @Test func compactionEntryIsASeam() throws {
+        let dir = makeTempDir("transcript-seam")
+        let path = writeTranscript(dir, lines: [
+            #"{"type":"session","v":3,"id":"abc-123","cwd":"/tmp/proj"}"#,
+            #"{"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"hello"}],"timestamp":1787647897173}}"#,
+            #"{"type":"compaction","id":"c9","parentId":"m1","timestamp":"2026-09-02T16:53:55.315Z","summary":"What was said, kept.","tokensBefore":32775,"tokensAfter":29797}"#,
+            #"{"type":"message","id":"m2","message":{"role":"user","content":[{"type":"text","text":"after"}],"timestamp":1787647899000}}"#,
+        ])
+        let loaded = TranscriptLoader.load(sessionFile: path)
+        #expect(loaded.messages.map(\.id) == ["u-m1", "c-c9", "u-m2"])
+        guard case .compaction(let seam)? = loaded.messages[1].parts.first else {
+            Issue.record("expected a compaction part")
+            return
+        }
+        #expect(seam.summary == "What was said, kept.")
+        #expect(seam.tokensBefore == 32775)
+        #expect(seam.tokensAfter == 29797)
+        #expect(seam.trigger == nil)
+        #expect(TranscriptLoader.lastCompaction(inFile: path)?["id"]?.stringValue == "c9")
+    }
 }
