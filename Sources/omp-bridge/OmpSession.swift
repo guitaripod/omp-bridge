@@ -114,7 +114,8 @@ actor OmpSession {
     init(
         id: String = UUID().uuidString, title: String = "New chat", directory: String,
         model: String, effort: String, ompSessionFile: String? = nil, config: Config, hub: Hub,
-        quietRegistry: QuietRegistry, journal: TurnJournal? = nil
+        quietRegistry: QuietRegistry, journal: TurnJournal? = nil,
+        restoredDates: (createdAt: Date, updatedAt: Date)? = nil
     ) {
         self.id = id
         self.title = title
@@ -122,8 +123,8 @@ actor OmpSession {
         self.model = model
         self.effort = effort
         self.ompSessionFile = ompSessionFile
-        self.createdAt = Date()
-        self.updatedAt = Date()
+        self.createdAt = restoredDates?.createdAt ?? Date()
+        self.updatedAt = restoredDates?.updatedAt ?? Date()
         self.config = config
         self.hub = hub
         self.quietRegistry = quietRegistry
@@ -1211,6 +1212,8 @@ extension OmpSession {
             title = Self.derivedTitle(from: first)
             autoTitled = true
         }
+        if let created = loaded.messages.first?.createdAt { createdAt = created }
+        if let updated = loaded.updatedAt { updatedAt = max(updated, createdAt) }
     }
 
     func refreshFromTranscriptIfIdle() async {

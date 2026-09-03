@@ -110,6 +110,40 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         try? FileManager.default.removeItem(atPath: path)
     }
 
+    /// A restart must not make every restored chat look freshly created: the client sorts the
+    /// list by `updatedAt`, so a wall of now-stamps reshuffles the user's real order.
+    @Test func restoredAndAdoptedSessionsKeepTranscriptDates() async throws {
+        let dir = makeTempDir("adopt-dates")
+        let created = Date(timeIntervalSince1970: 1_700_000_000)
+        let updated = created.addingTimeInterval(3600)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let path = writeTranscript(dir, lines: [
+            #"{"type":"session","id":"sess-dates","cwd":"/tmp/dates","timestamp":"\#(formatter.string(from: created))"}"#,
+            #"{"type":"message","timestamp":"\#(formatter.string(from: updated))","message":{"role":"user","content":[{"type":"text","text":"when was this" }]}}"#,
+        ])
+        let config = Config(
+            port: 0, bind: "127.0.0.1", password: "x", workdir: dir,
+            ompBin: "/nonexistent/omp", storePath: dir + "/sessions.json",
+            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium")
+        let app = App(config: config)
+        let adopted = await app.adopt(file: path, ompID: "sess-dates")
+        #expect(abs(await adopted.createdDate().timeIntervalSince(updated)) < 1)
+        let adoptedUpdated = await adopted.updatedDate()
+        #expect(abs(adoptedUpdated.timeIntervalSince(updated)) < 1
+            || abs(adoptedUpdated.timeIntervalSince(Date())) < 3600)
+
+        let restored = OmpSession(
+            id: "restored-1", title: "Restored", directory: dir, model: "", effort: "medium",
+            ompSessionFile: path, config: config, hub: Hub(), quietRegistry: QuietRegistry(),
+            journal: nil, restoredDates: (created, updated))
+        await restored.adoptExternally(loaded: TranscriptLoader.load(sessionFile: path), ompID: "sess-dates")
+        let restoredUpdated = await restored.updatedDate()
+        #expect(abs(restoredUpdated.timeIntervalSince(updated)) < 1
+            || abs(restoredUpdated.timeIntervalSince(Date())) < 3600)
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
     @Test func deletedSessionStaysGoneAfterReopen() async throws {
         let dir = makeTempDir("hide")
         let ompID = "33333333-3333-7333-8333-333333333333"

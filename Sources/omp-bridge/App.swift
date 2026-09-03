@@ -300,7 +300,8 @@ actor App {
                 id: record.id, title: record.title,
                 directory: record.directory ?? config.workdir,
                 model: record.model, effort: record.effort, ompSessionFile: file,
-                config: config, hub: hub, quietRegistry: quietRegistry, journal: journal)
+                config: config, hub: hub, quietRegistry: quietRegistry, journal: journal,
+                restoredDates: (record.createdAt, record.updatedAt))
             await session.adoptExternally(loaded: TranscriptLoader.load(sessionFile: file), ompID: record.ompSessionID)
             sessions[record.id] = session
             ownedTranscriptsBySession[record.id] = Set(await session.ownedTranscriptIDs())
