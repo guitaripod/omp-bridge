@@ -285,10 +285,10 @@ actor OmpSession {
 
         let promptText = text
         if let wantEffort, wantEffort != effort {
-            effort = normalizeEffort(wantEffort)
+            effort = wantEffort
             if let process {
                 _ = await process.request(
-                    "set_thinking_level", fields: ["level": thinkingLevel(for: effort)])
+                    "set_thinking_level", fields: ["level": wantEffort])
             }
         }
         if let wantModel, wantModel != model, !wantModel.isEmpty {
@@ -373,7 +373,7 @@ actor OmpSession {
             self.model = model
         }
         if let level = data["thinkingLevel"]?.stringValue {
-            effort = normalizeEffort(level)
+            effort = level
         }
     }
 
@@ -1066,22 +1066,6 @@ actor OmpSession {
         await hub.publish(.session(id: id, event: event))
     }
 
-    func normalizeEffort(_ value: String) -> String {
-        switch value.lowercased() {
-        case "low", "minimal": "low"
-        case "high", "max", "xhigh": "high"
-        default: "medium"
-        }
-    }
-
-    func thinkingLevel(for effort: String) -> String {
-        switch effort {
-        case "low": "low"
-        case "high": "high"
-        default: "medium"
-        }
-    }
-
     private func adoptTranscriptIfNeeded() {
         guard messages.isEmpty, let file = ompSessionFile else { return }
         let loaded = TranscriptLoader.load(sessionFile: file)
@@ -1207,7 +1191,7 @@ extension OmpSession {
         if let id = ompID ?? loaded.sessionID { ompSessionID = id }
         if let cwd = loaded.cwd { directory = cwd }
         if let model = loaded.model, model != self.model { self.model = model }
-        if let effort = loaded.effort { self.effort = normalizeEffort(effort) }
+        if let effort = loaded.effort { self.effort = effort }
         if let first = loaded.firstUserText, !customTitle {
             title = Self.derivedTitle(from: first)
             autoTitled = true
