@@ -208,8 +208,7 @@ actor OmpSession {
             await applyModelOn(proc, model)
         }
         if !effort.isEmpty {
-            _ = await proc.request(
-                "set_thinking_level", fields: ["level": thinkingLevel(for: effort)])
+            _ = await proc.request("set_thinking_level", fields: ["level": effort])
         }
         Task { await proc.request("set_subagent_subscription", fields: ["level": "events"]) }
         return proc
@@ -476,11 +475,10 @@ actor OmpSession {
                 try await startCompaction(instructions: next.prompt.isEmpty ? nil : next.prompt)
                 return
             }
-            if let wantEffort = next.effort, normalizeEffort(wantEffort) != effort {
-                effort = normalizeEffort(wantEffort)
+            if let wantEffort = next.effort, wantEffort != effort {
+                effort = wantEffort
                 let proc = try await ensureProcess()
-                _ = await proc.request(
-                    "set_thinking_level", fields: ["level": thinkingLevel(for: effort)])
+                _ = await proc.request("set_thinking_level", fields: ["level": wantEffort])
             }
             if let wantModel = next.model, wantModel != model, !wantModel.isEmpty {
                 let proc = try await ensureProcess()
