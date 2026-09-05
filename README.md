@@ -18,7 +18,7 @@ conversation, and exposes them as plain HTTP + Server-Sent Events.
 | Subagents | `GET /sessions/:id/agents[/:agentID]` |
 | Money | `GET /sessions/:id/usage`, `GET /sessions/:id/spend`, `GET /analytics?days=N` |
 | Search | `GET /search?q=&limit=` over every omp transcript on the machine |
-| Commands | `GET /commands?session=` (live slash-command catalog from omp) |
+| Commands | `GET /commands?session=` (live slash-command catalog from omp), `GET /commands[?directory=]` (the machine's catalog with no chat open — a scratch omp asked in that directory, cached 5 min) |
 | Files | `GET /files`, `/files/content`, `/files/raw`, `GET /attachments/:session/:name` |
 | Git | `GET /git`, `/git/diff`, `/git/commit` (read-only) |
 | Auth | `GET /auth`, `POST /auth/login`, `/auth/code`, `/auth/cancel` (omp provider login) |

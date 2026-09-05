@@ -486,6 +486,67 @@ actor App {
         cachedModels = (Date(), models)
         return models
     }
+    private var cachedCommands: [String: (fetchedAt: Date, commands: [AgentCommandDTO])] = [:]
+    private var commandFetchTasks: [String: Task<[AgentCommandDTO], Never>] = [:]
+
+    /// The machine's slash catalog for a directory no chat is open in — a quick ask, or a
+    /// composer before its first turn. A live session already standing in that directory has
+    /// heard the catalog and answers for free; otherwise the scratch process that serves the
+    /// model catalog is asked, or a short-lived one is stood up in the directory itself, since
+    /// project skills and command files belong to the tree omp was started in. The answer is
+    /// kept a few minutes per directory so a keystroke never waits on a process launch twice.
+    func commandCatalog(directory: String?) async -> [AgentCommandDTO] {
+        let wanted = directory ?? config.workdir
+        for live in sessions.values where await live.directory == wanted {
+            let known = await live.commandCatalog()
+            guard !known.isEmpty else { continue }
+            cachedCommands[wanted] = (Date(), known)
+            return known
+        }
+        if let cached = cachedCommands[wanted], Date().timeIntervalSince(cached.fetchedAt) < 300 {
+            return cached.commands
+        }
+        if let inFlight = commandFetchTasks[wanted] { return await inFlight.value }
+        let task = Task { await self.fetchCommandCatalog(in: wanted) }
+        commandFetchTasks[wanted] = task
+        let commands = await task.value
+        commandFetchTasks[wanted] = nil
+        return commands
+    }
+
+    private func fetchCommandCatalog(in directory: String) async -> [AgentCommandDTO] {
+        let owned = directory != config.workdir
+        let process: OmpProcess
+        if !owned, let existing = await modelScratchRunning() {
+            process = existing
+        } else {
+            let created = OmpProcess(ompBin: config.ompBin, directory: directory) { _ in }
+            do {
+                try await created.start()
+            } catch {
+                FileHandle.standardError.write(
+                    Data("commands: scratch start failed: \(error)\n".utf8))
+                return cachedCommands[directory]?.commands ?? []
+            }
+            process = created
+            if !owned { modelScratchProcess = created }
+        }
+        let response = await process.request("get_available_commands", timeout: 60)
+        if owned { await process.stop() }
+        guard response.success, let list = response.data?["commands"]?.arrayValue else {
+            FileHandle.standardError.write(
+                Data("commands: request failed: \(response.error ?? "unknown")\n".utf8))
+            if !owned {
+                await process.stop()
+                if modelScratchProcess === process { modelScratchProcess = nil }
+            }
+            return cachedCommands[directory]?.commands ?? []
+        }
+        let commands = CommandCatalog.parse(list)
+        cachedCommands[directory] = (Date(), commands)
+        return commands
+    }
+
     private func modelScratchRunning() async -> OmpProcess? {
         guard let existing = modelScratchProcess, await existing.isRunning else {
             modelScratchProcess = nil

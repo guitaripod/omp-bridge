@@ -261,10 +261,13 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     }
 
     router.get("commands") { request, _ in
-        guard let sessionID = request.uri.queryParameters.get("session"),
+        if let sessionID = request.uri.queryParameters.get("session"),
             let session = await app.liveSession(id: sessionID)
-        else { return jsonResponse([AgentCommandDTO]()) }
-        return jsonResponse(await session.commandCatalog())
+        {
+            return jsonResponse(await session.commandCatalog())
+        }
+        let directory = request.uri.queryParameters.get("directory").map { String($0) }
+        return jsonResponse(await app.commandCatalog(directory: directory))
     }
 
     router.get("analytics") { request, _ in

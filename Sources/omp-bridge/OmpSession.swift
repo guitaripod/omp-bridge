@@ -726,7 +726,7 @@ actor OmpSession {
         case "notice":
             break
         case "available_commands_update":
-            knownCommands = Self.parseCommands(frame["commands"]?.arrayValue ?? [])
+            knownCommands = CommandCatalog.parse(frame["commands"]?.arrayValue ?? [])
         case "subagent_lifecycle", "subagent_progress", "subagent_event":
             recordSubagentFrame(frame, type: type)
         case "agent_end":
@@ -736,16 +736,6 @@ actor OmpSession {
             }
         default:
             break
-        }
-    }
-
-    private static func parseCommands(_ list: [JSONValue]) -> [AgentCommandDTO] {
-        list.compactMap { entry in
-            guard let name = entry["name"]?.stringValue else { return nil }
-            return AgentCommandDTO(
-                name: name, description: entry["description"]?.stringValue,
-                argumentHint: entry["input"]?["hint"]?.stringValue, source: "builtin",
-                scope: nil)
         }
     }
 

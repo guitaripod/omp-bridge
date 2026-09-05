@@ -68,3 +68,22 @@ import Testing
         #expect(!OmpSession.isPlaceholderTitle("Fix the bug"))
     }
 }
+
+@Suite struct CommandCatalogTests {
+    @Test func ompOriginsFoldOntoBridgeVocabulary() {
+        let frame = JSONValue.from([
+            ["name": "compact", "description": "Compact", "source": "builtin"],
+            ["name": "flyr", "description": "Flights", "input": ["hint": "<route>"], "source": "skill"],
+            ["name": "delegate", "source": "extension"],
+            ["name": "review", "source": "custom"],
+            ["name": "notes", "source": "file"],
+            ["name": "linear", "source": "mcp_prompt"],
+            ["description": "nameless"],
+        ] as [Any])
+        let parsed = CommandCatalog.parse(frame.arrayValue ?? [])
+        #expect(parsed.map(\.name) == ["compact", "flyr", "delegate", "review", "notes", "linear"])
+        #expect(parsed.map(\.source) == ["builtin", "skill", "plugin", "user", "user", "mcp"])
+        #expect(parsed[1].argumentHint == "<route>")
+        #expect(parsed[1].description == "Flights")
+    }
+}
