@@ -125,6 +125,17 @@ actor OmpProcess {
         self.extraEnv = extraEnv
         self.onEvent = onEvent
     }
+    /// `omp` is a `#!/usr/bin/env bun` script, and a service started at boot carries a PATH
+    /// without `~/.bun/bin`, so the binary's own directory goes in front of whatever PATH the
+    /// bridge inherited or the process cannot start at all.
+    private static func pathReachingRuntime(of binary: String, base: String?) -> String {
+        let dir = (binary as NSString).deletingLastPathComponent
+        var parts = (base ?? "/usr/local/bin:/usr/bin").split(separator: ":").map(String.init)
+        parts.removeAll { $0 == dir }
+        parts.insert(dir, at: 0)
+        return parts.joined(separator: ":")
+    }
+
     func start() async throws {
         guard !isRunning else { return }
         negotiated = false
@@ -134,6 +145,7 @@ actor OmpProcess {
         p.currentDirectoryURL = URL(fileURLWithPath: directory)
         var env = ProcessInfo.processInfo.environment
         env.merge(extraEnv) { _, new in new }
+        env["PATH"] = Self.pathReachingRuntime(of: ompBin, base: env["PATH"])
         p.environment = env
         let outPipe = Pipe()
         let inPipe = Pipe()

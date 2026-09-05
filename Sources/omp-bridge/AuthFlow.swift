@@ -103,12 +103,12 @@ actor AuthFlow {
     }
 
     private func handleFrame(_ frame: JSONValue) async {
-        guard frame["type"]?.stringValue == "extension_ui_request",
-            frame["method"]?.stringValue == "open_url"
-        else { return }
-        if frame["method"]?.stringValue == "input", let id = frame["id"]?.stringValue {
+        guard frame["type"]?.stringValue == "extension_ui_request" else { return }
+        let method = frame["method"]?.stringValue
+        if method == "input", let id = frame["id"]?.stringValue {
             pendingInputID = id
         }
+        guard method == "open_url" else { return }
         if let raw = frame["url"]?.stringValue {
             var cleaned = raw
             if let range = cleaned.range(of: "url=") {
