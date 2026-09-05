@@ -471,6 +471,15 @@ actor App {
             if !efforts.isEmpty {
                 model["variants"] = .array(efforts.map { JSONValue.string($0) })
             }
+            // A client sizes the context ring against the limit the server's catalog states;
+            // without it the name guess on the client can read a million-token model as two
+            // hundred thousand and call a compaction due long before it is.
+            if let window = entry["contextWindow"]?.intValue, window > 0 {
+                model["contextWindow"] = JSONValue.number(Double(window))
+            }
+            if let tokens = entry["maxTokens"]?.intValue, tokens > 0 {
+                model["maxTokens"] = JSONValue.number(Double(tokens))
+            }
             return .object(model)
         }
         failedModelsAt = nil
