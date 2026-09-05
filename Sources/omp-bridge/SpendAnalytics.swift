@@ -32,7 +32,7 @@ enum SpendAnalytics {
         title: String, turns: [TurnRecord], totals: (costUSD: Double, tokens: TokenCounts)
     ) -> SessionSpendReportDTO {
         var byModel: [String: SpendModelDTO] = [:]
-        let dtos = turns.map { turn in
+        var dtos = turns.map { turn in
             let key = turn.model ?? "unknown"
             var entry = byModel[key] ?? SpendModelDTO(model: key, turns: 0, tokens: TokenCounts(), costUSD: 0)
             entry.turns += 1
@@ -43,10 +43,53 @@ enum SpendAnalytics {
                 at: turn.at, seconds: turn.seconds, model: turn.model, calls: turn.calls,
                 tokens: turn.tokens, costUSD: turn.costUSD, prompt: turn.prompt)
         }
+        // A subscription provider bills a flat fee and its engine reports no money, so the turns
+        // arrive priced at zero and every client renders "$0" — a number that says the conversation
+        // was free, which is not a fact anyone can act on. Where the provider publishes a per-token
+        // rate card, price the tiers at it and say so: the report already carries `estimated`, the
+        // badge wears "~", and the source line names the guess. An engine that reported real money
+        // is never touched.
+        let engineReportedMoney = totals.costUSD > 0 || turns.contains { $0.costUSD > 0 }
+        if !engineReportedMoney {
+            for index in dtos.indices {
+                dtos[index].costUSD = Self.listPrice(
+                    model: dtos[index].model, tokens: dtos[index].tokens)
+            }
+            for (key, var entry) in byModel {
+                entry.costUSD = dtos.filter { ($0.model ?? "unknown") == key }
+                    .reduce(0) { $0 + $1.costUSD }
+                byModel[key] = entry
+            }
+        }
+        let totalCost = !engineReportedMoney ? dtos.reduce(0) { $0 + $1.costUSD } : totals.costUSD
         return SessionSpendReportDTO(
-            costUSD: totals.costUSD, tokens: totals.tokens, turns: dtos.reversed(),
+            costUSD: totalCost, tokens: totals.tokens, turns: dtos.reversed(),
             byModel: byModel.values.sorted { $0.costUSD > $1.costUSD },
             startedAt: turns.first?.at, endedAt: turns.last?.at, estimated: true)
+    }
+
+    /// Per-million-token list prices, read off the provider's own rate card. Nil for a model the
+    /// card does not carry — an invented rate is a worse lie than no money at all.
+    static func listPrice(model: String?, tokens: TokenCounts) -> Double {
+        guard let model else { return 0 }
+        let id = model.lowercased()
+        let rates: (input: Double, cached: Double, output: Double)
+        if id.contains("glm-5.3-flash") {
+            rates = (input: 0.15, cached: 0.03, output: 0.50)
+        } else if id.contains("glm-5.2") {
+            rates = (input: 1.40, cached: 0.26, output: 4.40)
+        } else if id.contains("glm-5.1") {
+            rates = (input: 1.00, cached: 0.20, output: 3.20)
+        } else if id.contains("deepseek-v4-flash") {
+            rates = (input: 0.44, cached: 0.044, output: 1.32)
+        } else if id.contains("deepseek-v4-pro") {
+            rates = (input: 0.88, cached: 0.088, output: 2.64)
+        } else {
+            return 0
+        }
+        return Double(tokens.input) / 1_000_000 * rates.input
+            + Double(tokens.cacheRead) / 1_000_000 * rates.cached
+            + Double(tokens.output) / 1_000_000 * rates.output
     }
 }
 

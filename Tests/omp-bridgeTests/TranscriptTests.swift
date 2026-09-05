@@ -197,6 +197,41 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         #expect(abs(report.costUSD - 1.0) < 0.0001 || true)
     }
 
+    /// An engine that reports no money gets its turns priced at the provider's published rate
+    /// card, so the panel says "~$1.76" instead of "$0" — and an unknown model stays at zero,
+    /// because an invented rate is a worse lie than no money at all.
+    @Test func anUnpricedEngineGetsListPriceEstimates() {
+        let turns = [
+            TurnRecord(
+                at: Date(), seconds: 60, model: "glm-5.3-flash", calls: 4,
+                tokens: TokenCounts(input: 1_000_000, output: 10_000), costUSD: 0, prompt: "big"),
+            TurnRecord(
+                at: Date(), seconds: 10, model: "some-unknown-model", calls: 1,
+                tokens: TokenCounts(input: 500_000, output: 5_000), costUSD: 0, prompt: "dark"),
+        ]
+        let report = SpendAnalytics.report(
+            title: "t", turns: turns, totals: (costUSD: 0, tokens: TokenCounts(input: 1_500_000, output: 15_000)))
+        let glm = report.turns.first { $0.model == "glm-5.3-flash" }
+        #expect(abs(glm!.costUSD - 0.155) < 0.0001)  // 1M×$0.15 + 10k×$0.50
+        let unknown = report.turns.first { $0.model == "some-unknown-model" }
+        #expect(unknown?.costUSD == 0)
+        #expect(report.costUSD == glm!.costUSD)
+    }
+
+    /// An engine that reported real money is never re-priced — the estimate exists for the
+    /// subscription case only, and overwriting a provider's own bill would be the bigger lie.
+    @Test func aPricedEngineKeepsItsOwnMoney() {
+        let turns = [
+            TurnRecord(
+                at: Date(), seconds: 60, model: "glm-5.3-flash", calls: 2,
+                tokens: TokenCounts(input: 1_000_000, output: 10_000), costUSD: 0.31, prompt: "priced"),
+        ]
+        let report = SpendAnalytics.report(
+            title: "t", turns: turns, totals: (costUSD: 0.31, tokens: TokenCounts(input: 1_000_000, output: 10_000)))
+        #expect(report.turns.first?.costUSD == 0.31)
+        #expect(abs(report.costUSD - 0.31) < 0.0001)
+    }
+
     @Test func compactionEntryIsASeam() throws {
         let dir = makeTempDir("transcript-seam")
         let path = writeTranscript(dir, lines: [
