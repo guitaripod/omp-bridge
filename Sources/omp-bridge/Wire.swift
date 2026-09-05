@@ -87,6 +87,10 @@ struct Message: Codable, Sendable {
     var seconds: Double?
     var model: String?
     var usage: TokenCounts?
+    /// What the turn's last call was handed and wrote back — the footprint in the context window,
+    /// which `usage` (every call added up) overstates by the call count. Same field, same meaning
+    /// as claude-bridge's, so the Kit reads both the same way.
+    var context: TokenCounts?
     var costUSD: Double?
 }
 

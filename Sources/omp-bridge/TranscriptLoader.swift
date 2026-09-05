@@ -97,7 +97,7 @@ enum TranscriptLoader {
                         Message(
                             id: "a-\(value["id"]?.stringValue ?? UUID().uuidString)",
                             role: .assistant, parts: parts, createdAt: timestamp, seconds: nil,
-                            model: message["model"]?.stringValue, usage: counts,
+                            model: message["model"]?.stringValue, usage: counts, context: counts,
                             costUSD: usage?["cost"]?["total"]?.doubleValue))
                 case "toolResult":
                     guard let callID = message["toolCallId"]?.stringValue ?? message["toolCallID"]?.stringValue else { continue }

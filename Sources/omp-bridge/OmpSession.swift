@@ -72,6 +72,7 @@ actor OmpSession {
     private var liveCreatedAt: Date?
     private var liveParts: [LivePart] = []
     private var liveUsage = TokenCounts()
+    private var liveContext: TokenCounts?
     private var liveCost = 0.0
     private var liveModel: String?
     private var lastSnapshotAt = Date.distantPast
@@ -539,7 +540,8 @@ actor OmpSession {
         return Message(
             id: id, role: .assistant, parts: materializedParts(), createdAt: created,
             seconds: final ? turnStartedAt.map { Date().timeIntervalSince($0) } : nil,
-            model: liveModel, usage: final ? liveUsage : nil, costUSD: final ? liveCost : nil)
+            model: liveModel, usage: final ? liveUsage : nil, context: liveContext,
+            costUSD: final ? liveCost : nil)
     }
 
     /// A mid-turn transcript sync point: the whole live message, republished at most four times a
@@ -774,6 +776,7 @@ actor OmpSession {
             liveCreatedAt = Date()
             liveParts = []
             liveUsage = TokenCounts()
+            liveContext = nil
             liveCost = 0
             liveModel = message["model"]?.stringValue ?? liveModel
             lastSnapshotAt = .distantPast
@@ -923,6 +926,7 @@ actor OmpSession {
             input: input, output: output, cacheRead: cacheRead, cacheWrite5m: cacheWrite,
             cacheWrite1h: 0)
         liveUsage = liveUsage + counts
+        liveContext = counts
         turnTokens = turnTokens + counts
         let cost = usage?["cost"]?["total"]?.doubleValue ?? 0
         liveCost += cost
