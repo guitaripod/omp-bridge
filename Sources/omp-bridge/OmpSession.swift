@@ -322,6 +322,13 @@ actor OmpSession {
 
     /// How long a turn may go without a word from the engine before its liveness is questioned.
     private static let turnSilence: TimeInterval = 20
+    /// How far apart the engine is asked, once a turn has gone quiet, and how many times in a row
+    /// it has to say it is not streaming before the turn is called over — one answer taken alone
+    /// would close a turn whose only silence is a long tool call.
+    private static let healProbeGap: TimeInterval = 10
+    private static let healStrikesToClose = 2
+    private var lastHealProbeAt = Date.distantPast
+    private var healStrikes = 0
 
     /// A turn the engine has already dropped must not keep this session busy: oh-my-pi aborts
     /// the active turn for a manual compaction and can end a turn without a terminal
@@ -333,8 +340,44 @@ actor OmpSession {
             Date().timeIntervalSince(lastEventAt) > Self.turnSilence,
             let process
         else { return }
+        guard await process.isRunning else {
+            await publish(.error("The oh-my-pi process exited before the turn ended."))
+            finishTurn()
+            return
+        }
         let state = await process.request("get_state", timeout: 10)
         guard let data = state.data, data["isStreaming"]?.boolValue == false else { return }
+        finishTurn()
+    }
+
+    /// The same healing on the bridge's own clock, so a dead turn is closed while nobody is
+    /// sending rather than on the next prompt — which is the one that never went, because it was
+    /// queued behind the turn that had died. Asked at most once every ``healProbeGap`` and only
+    /// after two consecutive answers agree: a single "not streaming" can be a tool that has been
+    /// running quietly for a while.
+    func healIfStale() async {
+        guard running, pendingUI == nil,
+            Date().timeIntervalSince(lastEventAt) > Self.turnSilence,
+            Date().timeIntervalSince(lastHealProbeAt) > Self.healProbeGap
+        else {
+            if !running { healStrikes = 0 }
+            return
+        }
+        lastHealProbeAt = Date()
+        guard let process, await process.isRunning else {
+            healStrikes = 0
+            await publish(.error("The oh-my-pi process exited before the turn ended."))
+            finishTurn()
+            return
+        }
+        let state = await process.request("get_state", timeout: 10)
+        guard let data = state.data, data["isStreaming"]?.boolValue == false else {
+            healStrikes = 0
+            return
+        }
+        healStrikes += 1
+        guard healStrikes >= Self.healStrikesToClose else { return }
+        healStrikes = 0
         finishTurn()
     }
 
@@ -685,6 +728,20 @@ actor OmpSession {
         let type = frame["type"]?.stringValue ?? ""
         lastEventAt = Date()
         switch type {
+        case "process_exited":
+            /// The engine went away under a turn. Nothing else will ever close it, so it is
+            /// closed here with its reason, and the next prompt starts a fresh engine.
+            process = nil
+            if compacting {
+                compacting = false
+                compactionStartedAt = nil
+                await quietRegistry.decrement()
+                await publish(.compaction(phase: "failed", error: "The oh-my-pi process exited"))
+            }
+            if running {
+                await publish(.error("The oh-my-pi process exited before the turn ended."))
+                finishTurn()
+            }
         case "agent_start":
             running = true
             if turnStartedAt == nil { turnStartedAt = Date() }
@@ -1173,6 +1230,7 @@ extension OmpSession {
         (totalCostUSD, totalTokens)
     }
     func isRunningValue() -> Bool { running }
+    func externallyLiveValue() -> Bool { externallyLive }
     func pendingInterruption() -> Interruption? { nil }
 
     func summarySnapshot() -> SessionSummary { summary }

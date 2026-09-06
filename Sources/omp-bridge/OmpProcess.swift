@@ -195,6 +195,10 @@ actor OmpProcess {
                     command: "process", success: false,
                     error: "The oh-my-pi process exited", errorCode: nil, data: nil))
         }
+        // The session hears about it as one more event, so a turn the engine died under is
+        // closed the moment it happens rather than discovered by the next prompt.
+        let onEvent = self.onEvent
+        Task { await onEvent(.object(["type": .string("process_exited")])) }
     }
 
     func stop() async {

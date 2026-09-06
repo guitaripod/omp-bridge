@@ -228,6 +228,7 @@ actor App {
         }
         lastSummaries = current
         for (_, session) in sessions {
+            await session.healIfStale()
             await session.refreshFromTranscriptIfIdle()
             ownedTranscriptsBySession[session.id] = Set(await session.ownedTranscriptIDs())
             let updatedAt = await session.updatedDate()

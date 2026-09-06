@@ -112,12 +112,24 @@ struct Session: Codable, Sendable {
     var autoTitled: Bool?
     var interruption: Interruption?
     var autoResume: Bool?
+    /// Stamped when a session is served: whether something is moving in this conversation and,
+    /// narrower, whether its own turn is open. A client that lost the one frame saying a turn
+    /// ended reads the answer here on its next look rather than staying busy for good.
+    var active: Bool?
+    var turnOpen: Bool?
 
     var summary: SessionSummary {
         SessionSummary(
             id: id, title: title, directory: directory, model: model, effort: effort,
             createdAt: createdAt, updatedAt: updatedAt)
     }
+}
+
+/// `GET /sessions/:id/revision`: the bridge's record of one session in one small answer.
+struct SessionRevision: Codable, Sendable {
+    var updatedAt: Date
+    var active: Bool
+    var turnOpen: Bool
 }
 
 struct SessionSummary: Codable, Sendable, Equatable {

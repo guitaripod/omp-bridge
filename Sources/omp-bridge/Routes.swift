@@ -473,6 +473,18 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         } catch { return sessionError(error) }
     }
 
+    router.get("sessions/:id/revision") { _, context in
+        do {
+            let session = try await resolveSession(context)
+            let running = await session.isRunningValue()
+            let externallyLive = await session.externallyLiveValue()
+            return jsonResponse(
+                SessionRevision(
+                    updatedAt: await session.updatedDate(),
+                    active: running || externallyLive, turnOpen: running))
+        } catch { return sessionError(error) }
+    }
+
     router.get("sessions/:id/usage") { _, context in
         do {
             let session = try await resolveSession(context)
@@ -645,6 +657,8 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         let messages = await session.snapshotMessages()
         let totals = await session.spendTotalsSnapshot()
         let lastTurn = await session.turnsSnapshot().last
+        let running = await session.isRunningValue()
+        let externallyLive = await session.externallyLiveValue()
         return Session(
             id: session.id, title: await session.titleText(),
             directory: await session.directoryPath(), ompSessionID: await session.currentOmpSessionID(),
@@ -653,7 +667,8 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
             createdAt: await session.createdDate(), updatedAt: await session.updatedDate(),
             messages: messages, lastCostUSD: lastTurn?.costUSD,
             lastTokens: lastTurn?.tokens.total, customTitle: await session.customTitleValue(),
-            autoTitled: await session.autoTitledValue(), interruption: nil, autoResume: nil)
+            autoTitled: await session.autoTitledValue(), interruption: nil, autoResume: nil,
+            active: running || externallyLive, turnOpen: running)
     }
 
     @Sendable func resolveGitDirectory(_ request: Request, app: App) async -> String? {
