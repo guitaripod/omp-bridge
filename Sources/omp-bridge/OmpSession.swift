@@ -84,6 +84,10 @@ actor OmpSession {
     private var turnCost = 0.0
     private var turnHadContent = false
     private var turnLastErrorMessage: String?
+    /// Pending tool-call parts by the engine's `contentIndex`, so parallel calls in one message
+    /// are keyed by the index that names them rather than by whichever happened to land last.
+    private var pendingContentIndexes: [Int: Int] = [:]
+
     private var pendingUI: PendingUI?
     private var subagents: [String: SubagentState] = [:]
     private var knownCommands: [AgentCommandDTO] = []
@@ -555,13 +559,41 @@ actor OmpSession {
         totalTokens = totalTokens + turnTokens
         turnStartedAt = nil
         settleUnansweredAsk()
+        let settled = settleDanglingTools()
         Task {
             if let unfinished { await publish(.messageUpserted(unfinished)) }
+            for message in settled where message.id != unfinished?.id {
+                await publish(.messageUpserted(message))
+            }
             await publish(.status("idle"))
             await journal?.clear(id)
             await quietRegistry.decrement()
             await drainQueue()
         }
+    }
+
+    /// A tool the turn never heard back from. The engine reports every execution it finishes, so
+    /// a call still running once the turn is over is one whose result died with the process — and
+    /// a running call is drawn as work in progress on every client for as long as the transcript
+    /// survives. Settle it as ended rather than leaving a spinner nobody can stop, and hand back
+    /// the messages that changed so the wire says so too.
+    private func settleDanglingTools() -> [Message] {
+        var changed: [Message] = []
+        for index in messages.indices.reversed() {
+            guard messages[index].role == .assistant else { continue }
+            var touched = false
+            for partIndex in messages[index].parts.indices {
+                guard case .tool(var call) = messages[index].parts[partIndex],
+                    call.status == .running
+                else { continue }
+                call.status = .stopped
+                messages[index].parts[partIndex] = .tool(call)
+                touched = true
+            }
+            if touched { changed.append(messages[index]) }
+        }
+        if !changed.isEmpty { touch() }
+        return changed
     }
 
     /// Assembles and appends whatever the live message holds when a turn ends without its own
@@ -575,6 +607,7 @@ actor OmpSession {
         touch()
         liveMessageID = nil
         liveParts = []
+        pendingContentIndexes = [:]
         return assembled
     }
 
@@ -600,15 +633,13 @@ actor OmpSession {
 
     private func settleUnansweredAsk() {
         guard let ui = pendingUI else { return }
-        if let index = indexOfToolPart(ui.toolCallID) {
-            updateToolPart(index: index) { tool in
+        if let seat = seatOfToolPart(ui.toolCallID) {
+            mutateToolPart(seat) { tool in
                 tool.status = .error
                 tool.output = "Unanswered"
             }
-            if let messageID = liveMessageID ?? messages.last?.id {
-                let call = extractTool(at: index)
-                Task { await publishTool(call, messageID: messageID) }
-            }
+            let seatToPublish = seat
+            Task { [weak self] in await self?.publishTool(seatToPublish) }
         }
         pendingUI = nil
     }
@@ -703,15 +734,12 @@ actor OmpSession {
         let answerLabel =
             (payload["value"] as? String)
             ?? ((payload["confirmed"] as? Bool).map { $0 ? "Yes" : "No" }) ?? trimmed
-        if let index = indexOfToolPart(ui.toolCallID) {
-            updateToolPart(index: index) { tool in
+        if let seat = seatOfToolPart(ui.toolCallID) {
+            mutateToolPart(seat) { tool in
                 tool.status = .completed
                 tool.output = "Your questions have been answered: \"\(ui.message ?? "")\"=\"\(answerLabel)\"."
             }
-            if let messageID = liveMessageID {
-                let call = extractTool(at: index)
-                await publishTool(call, messageID: messageID)
-            }
+            await publishTool(seat)
         }
         if let process {
             _ = await process.sendExternal(payload)
@@ -822,6 +850,7 @@ actor OmpSession {
             liveMessageID = "a-\(UUID().uuidString.prefix(8))"
             liveCreatedAt = Date()
             liveParts = []
+            pendingContentIndexes = [:]
             liveUsage = TokenCounts()
             liveContext = nil
             liveCost = 0
@@ -861,22 +890,26 @@ actor OmpSession {
             appendToLiveReasoning(event["delta"]?.stringValue ?? "")
             await publishLiveSnapshot()
         case "toolcall_start":
-            liveParts.append(
-                .tool(ToolCall(id: "pending-\(liveParts.count)", name: "", input: "", status: .running)))
+            let pending = ToolCall(
+                id: "pending-\(liveParts.count)", name: "", input: "", status: .running)
+            pendingContentIndexes[event["contentIndex"]?.intValue ?? -1] = liveParts.count
+            liveParts.append(.tool(pending))
         case "toolcall_delta":
             let delta = event["delta"]?.stringValue ?? ""
-            if let index = lastLiveToolIndex() {
-                updateToolPart(index: index) { $0.input += delta }
+            if let index = pendingToolIndex(for: event) {
+                mutateToolPart(.live(index)) { $0.input += delta }
                 await publishLiveSnapshot()
             }
         case "toolcall_end":
-            if let call = event["toolCall"], let index = lastLiveToolIndex() {
+            if let call = event["toolCall"], let index = pendingToolIndex(for: event) {
                 let arguments = Self.serializeArguments(call["arguments"])
-                updateToolPart(index: index) { tool in
+                mutateToolPart(.live(index)) { tool in
                     tool.id = call["id"]?.stringValue ?? tool.id
                     tool.name = call["name"]?.stringValue ?? tool.name
                     tool.input = arguments
                 }
+                pendingContentIndexes.removeValue(
+                    forKey: event["contentIndex"]?.intValue ?? -1)
             }
         default:
             break
@@ -914,35 +947,57 @@ actor OmpSession {
         liveParts.append(.reasoning(delta))
     }
 
-    private func lastLiveToolIndex() -> Int? {
-        liveParts.lastIndex { if case .tool = $0 { return true }; return false }
+    private func pendingToolIndex(for event: JSONValue) -> Int? {
+        if let index = pendingContentIndexes[event["contentIndex"]?.intValue ?? -1] {
+            return index
+        }
+        return liveParts.lastIndex { if case .tool = $0 { return true }; return false }
     }
 
-    private func indexOfToolPart(_ toolID: String) -> Int? {
-        liveParts.lastIndex {
-            if case .tool(let call) = $0 { return call.id == toolID }
-            return false
-        } ?? messages.last?.parts.lastIndex(where: { part in
+    /// Where a tool call lives. The engine closes an assistant message the moment it names its
+    /// tool calls, then reports each execution against it — so by the time `tool_execution_end`
+    /// arrives the call has almost always moved out of the live buffer and into ``messages``, and
+    /// a completion that only knows how to touch one of the two is a spinner nobody can turn off.
+    enum ToolSeat {
+        case live(Int)
+        case settled(messageID: String, messageIndex: Int, partIndex: Int)
+    }
+
+    private func seatOfToolPart(_ toolID: String) -> ToolSeat? {
+        if let index = liveParts.lastIndex(where: { part in
             if case .tool(let call) = part { return call.id == toolID }
             return false
-        })
+        }) { return .live(index) }
+        for messageIndex in messages.indices.reversed() {
+            if let partIndex = messages[messageIndex].parts.lastIndex(where: { part in
+                if case .tool(let call) = part { return call.id == toolID }
+                return false
+            }) {
+                return .settled(
+                    messageID: messages[messageIndex].id, messageIndex: messageIndex,
+                    partIndex: partIndex)
+            }
+        }
+        return nil
     }
 
-    private func updateToolPart(index: Int, _ mutate: (inout ToolCall) -> Void) {
-        if liveParts.indices.contains(index), case .tool(var call) = liveParts[index] {
+    private func mutateToolPart(_ seat: ToolSeat, _ mutate: (inout ToolCall) -> Void) {
+        switch seat {
+        case .live(let index):
+            if liveParts.indices.contains(index), case .tool(var call) = liveParts[index] {
+                mutate(&call)
+                liveParts[index] = .tool(call)
+            }
+        case .settled(let messageID, let messageIndex, let partIndex):
+            guard messages.indices.contains(messageIndex),
+                messages[messageIndex].id == messageID,
+                messages[messageIndex].parts.indices.contains(partIndex),
+                case .tool(var call) = messages[messageIndex].parts[partIndex]
+            else { return }
             mutate(&call)
-            liveParts[index] = .tool(call)
+            messages[messageIndex].parts[partIndex] = .tool(call)
+            touch()
         }
-    }
-
-    private func extractTool(at index: Int) -> ToolCall {
-        if liveParts.indices.contains(index), case .tool(let call) = liveParts[index] {
-            return call
-        }
-        if let part = messages.last?.parts[safe: index], case .tool(let call) = part {
-            return call
-        }
-        return ToolCall(id: "unknown", name: "", input: "", status: .error)
     }
 
     private func handleMessageEnd(_ frame: JSONValue) async {
@@ -996,14 +1051,14 @@ actor OmpSession {
         guard let toolCallID = frame["toolCallId"]?.stringValue else { return }
         let name = frame["toolName"]?.stringValue ?? ""
         let args = Self.serializeArguments(frame["args"])
-        if let index = indexOfToolPart(toolCallID) {
-            updateToolPart(index: index) { tool in
+        if let seat = seatOfToolPart(toolCallID) {
+            mutateToolPart(seat) { tool in
                 tool.id = toolCallID
                 tool.name = name
                 if tool.input.isEmpty { tool.input = args }
                 tool.status = .running
             }
-            await publishTool(at: index)
+            await publishTool(seat)
         }
     }
 
@@ -1013,11 +1068,11 @@ actor OmpSession {
             $0["text"]?.stringValue
         }
         let output = texts.joined()
-        if let index = indexOfToolPart(toolCallID) {
-            updateToolPart(index: index) { tool in
+        if let seat = seatOfToolPart(toolCallID) {
+            mutateToolPart(seat) { tool in
                 tool.output = String(output.prefix(10_000))
             }
-            await publishTool(at: index)
+            await publishTool(seat)
         }
     }
 
@@ -1031,22 +1086,22 @@ actor OmpSession {
                 $0["image"]?.stringValue
             }.joined()
         }
-        if let index = indexOfToolPart(toolCallID) {
-            updateToolPart(index: index) { tool in
-                tool.status = isError ? .error : .completed
-                tool.output = String(output.prefix(10_000))
-            }
-            await publishTool(at: index)
-            let partsBefore = liveParts.count
-            await attachResultFiles(frame, toolCallID: toolCallID)
-            if liveParts.count != partsBefore {
-                await publishLiveSnapshot(force: true)
-            }
+        guard let seat = seatOfToolPart(toolCallID) else { return }
+        mutateToolPart(seat) { tool in
+            tool.status = isError ? .error : .completed
+            tool.output = String(output.prefix(10_000))
+        }
+        await publishTool(seat)
+        let attached = attachResultFiles(frame, toolCallID: toolCallID)
+        if case .live = seat, attached {
+            await publishLiveSnapshot(force: true)
         }
     }
 
-    private func attachResultFiles(_ frame: JSONValue, toolCallID: String) async {
-        guard let contents = frame["result"]?["content"]?.arrayValue else { return }
+    private func attachResultFiles(_ frame: JSONValue, toolCallID: String) -> Bool {
+        guard let contents = frame["result"]?["content"]?.arrayValue else { return false }
+        guard let seat = seatOfToolPart(toolCallID) else { return false }
+        var attached = false
         for content in contents {
             guard let path = content["path"]?.stringValue ?? content["filePath"]?.stringValue,
                 isImagePath(path)
@@ -1056,15 +1111,20 @@ actor OmpSession {
             let url =
                 "/files/raw?path=\(Self.percentEncode(path))&tool=\(Self.percentEncode(toolCallID))&session=\(Self.percentEncode(ompSessionID ?? id))"
             let fileRef = FileRef(path: path, mime: mime, filename: filename, url: url)
-            if let index = liveParts.lastIndex(where: {
-                if case .tool(let call) = $0 { return call.id == toolCallID }
-                return false
-            }) {
+            switch seat {
+            case .live(let index):
                 liveParts.insert(.file(fileRef), at: min(index + 1, liveParts.count))
-            } else {
-                liveParts.append(.file(fileRef))
+            case .settled(let messageID, let messageIndex, let partIndex):
+                guard messages.indices.contains(messageIndex),
+                    messages[messageIndex].id == messageID,
+                    messages[messageIndex].parts.indices.contains(partIndex)
+                else { continue }
+                messages[messageIndex].parts.insert(
+                    .file(fileRef), at: min(partIndex + 1, messages[messageIndex].parts.count))
             }
+            attached = true
         }
+        return attached
     }
 
     static func percentEncode(_ value: String) -> String {
@@ -1090,16 +1150,32 @@ actor OmpSession {
         }
     }
 
-    private func publishTool(at index: Int) async {
-        guard let messageID = liveMessageID,
-            liveParts.indices.contains(index),
-            case .tool(let call) = liveParts[index]
-        else { return }
+    private func publishTool(_ seat: ToolSeat) async {
+        let found = toolCall(at: seat)
+        guard let (messageID, call) = found else { return }
         await publish(.toolUpserted(messageID: messageID, call))
     }
 
     private func publishTool(_ call: ToolCall, messageID: String) async {
         await publish(.toolUpserted(messageID: messageID, call))
+    }
+
+    /// The call a seat names, with the message id a client needs to seat an upsert of it.
+    private func toolCall(at seat: ToolSeat) -> (messageID: String, call: ToolCall)? {
+        switch seat {
+        case .live(let index):
+            guard let messageID = liveMessageID, liveParts.indices.contains(index),
+                case .tool(let call) = liveParts[index]
+            else { return nil }
+            return (messageID, call)
+        case .settled(let messageID, let messageIndex, let partIndex):
+            guard messages.indices.contains(messageIndex),
+                messages[messageIndex].id == messageID,
+                messages[messageIndex].parts.indices.contains(partIndex),
+                case .tool(let call) = messages[messageIndex].parts[partIndex]
+            else { return nil }
+            return (messageID, call)
+        }
     }
 
     private func settleTurnEnd() async {

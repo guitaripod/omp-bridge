@@ -10,6 +10,10 @@ enum ToolStatus: String, Codable, Sendable {
     case running
     case completed
     case error
+    /// A call that ended rather than finished — a turn that died with its result still out. A
+    /// record, not a fault: the row holds still instead of turning for as long as the transcript
+    /// survives.
+    case stopped
 }
 
 struct ToolCall: Codable, Sendable {
