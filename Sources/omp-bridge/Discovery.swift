@@ -7,6 +7,8 @@ struct DiscoveredSession: Sendable {
     let directory: String?
     let updatedAt: Date
     let firstUserText: String?
+    let model: String?
+    let effort: String?
 }
 
 /// Per-path light-parse results keyed by mtime, so the observer's once-a-second scan re-reads a
@@ -18,6 +20,8 @@ final class DiscoveryCache {
         let title: String?
         let cwd: String?
         let firstUserText: String?
+        let model: String?
+        let effort: String?
     }
 
     var lights: [String: Light] = [:]
@@ -70,7 +74,8 @@ enum Discovery {
                 guard let loaded = loadLight(path) else { continue }
                 light = DiscoveryCache.Light(
                     mtime: mtime, ompSessionID: loaded.ompSessionID, title: loaded.title,
-                    cwd: loaded.cwd, firstUserText: loaded.firstUserText)
+                    cwd: loaded.cwd, firstUserText: loaded.firstUserText,
+                    model: loaded.model, effort: loaded.effort)
                 cache?.lights[path] = light
             }
             if let id = light.ompSessionID, hidden.contains(id) { continue }
@@ -79,43 +84,65 @@ enum Discovery {
                 DiscoveredSession(
                     ompSessionID: light.ompSessionID
                         ?? file.replacingOccurrences(of: ".jsonl", with: ""),
-                    file: path, title: light.title ?? "Session",
+                    file: path, title: listedTitle(light),
                     directory: light.cwd,
                     updatedAt: mtime,
-                    firstUserText: light.firstUserText))
+                    firstUserText: light.firstUserText,
+                    model: light.model, effort: light.effort))
         }
     }
 
-    private static func loadLight(_ path: String) -> (ompSessionID: String?, title: String?, cwd: String?, firstUserText: String?)? {
+    /// A transcript names itself the way an adopted one does — after the first thing said in
+    /// it — from the moment it is found on disk. omp writes an empty title row at the top of every
+    /// session, and a list that waited for the person to open the chat before reading past it
+    /// showed "Session" for a conversation that had been running for an hour.
+    private static func listedTitle(_ light: DiscoveryCache.Light) -> String {
+        if let title = light.title { return title }
+        guard let first = light.firstUserText else { return "Session" }
+        let derived = OmpSession.derivedTitle(from: first)
+        return OmpSession.isPlaceholderTitle(derived) ? "Session" : derived
+    }
+
+    private struct LightParse {
+        var ompSessionID: String?
+        var title: String?
+        var cwd: String?
+        var firstUserText: String?
+        var model: String?
+        var effort: String?
+    }
+
+    private static func loadLight(_ path: String) -> LightParse? {
         guard let handle = FileHandle(forReadingAtPath: path),
             let raw = try? handle.read(upToCount: 262_144), !raw.isEmpty
         else { return nil }
         try? handle.close()
-        var id: String?
-        var title: String?
-        var cwd: String?
-        var firstText: String?
+        var parse = LightParse()
         for line in raw.split(separator: UInt8(0x0A)).prefix(40) {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) else { continue }
             let value = JSONValue.from(obj)
             switch value["type"]?.stringValue {
             case "session":
-                id = value["id"]?.stringValue
-                cwd = value["cwd"]?.stringValue
+                parse.ompSessionID = value["id"]?.stringValue
+                parse.cwd = value["cwd"]?.stringValue
             case "title":
-                if let t = value["title"]?.stringValue, !t.isEmpty { title = t }
+                if let t = value["title"]?.stringValue, !t.isEmpty { parse.title = t }
+            case "model_change":
+                if let model = value["model"]?.stringValue { parse.model = model }
+            case "thinking_level_change":
+                parse.effort = TranscriptLoader.thinkingLevel(in: value)
             case "message":
-                if firstText == nil, value["message"]?["role"]?.stringValue == "user" {
+                if parse.firstUserText == nil, value["message"]?["role"]?.stringValue == "user" {
                     let texts = (value["message"]?["content"]?.arrayValue ?? []).compactMap { block in
                         block["type"]?.stringValue == "text" ? block["text"]?.stringValue : nil
                     }
-                    firstText = texts.joined(separator: " ")
+                    parse.firstUserText = texts.joined(separator: " ")
                 }
             default:
                 break
             }
-            if id != nil, cwd != nil, firstText != nil { break }
+            if parse.ompSessionID != nil, parse.cwd != nil, parse.firstUserText != nil { break }
         }
-        return (id, title, cwd, firstText)
+        return parse
     }
 }

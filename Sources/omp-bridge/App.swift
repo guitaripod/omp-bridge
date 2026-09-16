@@ -194,7 +194,8 @@ actor App {
         for item in discovered where !claimedIDs.contains(item.ompSessionID) {
             byID[item.ompSessionID] = SessionSummary(
                 id: item.ompSessionID, title: item.title, directory: item.directory,
-                model: "", effort: "", createdAt: item.updatedAt, updatedAt: item.updatedAt)
+                model: item.model ?? "", effort: item.effort ?? "",
+                createdAt: item.updatedAt, updatedAt: item.updatedAt)
         }
         return byID
     }

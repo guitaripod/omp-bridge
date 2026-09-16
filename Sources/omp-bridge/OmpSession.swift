@@ -416,12 +416,20 @@ actor OmpSession {
         guard let data = state.data else { return }
         if let file = data["sessionFile"]?.stringValue { ompSessionFile = file }
         if let sid = data["sessionId"]?.stringValue { ompSessionID = sid }
-        if let model = data["model"]?["id"]?.stringValue, model != self.model {
+        if let model = Self.qualifiedModel(inState: data), model != self.model {
             self.model = model
         }
-        if let level = data["thinkingLevel"]?.stringValue {
-            effort = level
-        }
+        effort = data["thinkingLevel"]?.stringValue ?? ""
+    }
+
+    /// The engine's model in `provider/id` form, the shape the transcript's own `model_change`
+    /// rows use. Reading only the id left one session saying "qwen38-nvfp4" and the next
+    /// "llama-swap/qwen38-nvfp4" for the same engine, and a client matching against its
+    /// catalog could resolve only one of them.
+    private static func qualifiedModel(inState data: JSONValue) -> String? {
+        guard let id = data["model"]?["id"]?.stringValue, !id.isEmpty else { return nil }
+        guard let provider = data["model"]?["provider"]?.stringValue, !provider.isEmpty else { return id }
+        return "\(provider)/\(id)"
     }
 
     func abort() async -> Bool {
@@ -854,7 +862,7 @@ actor OmpSession {
             liveUsage = TokenCounts()
             liveContext = nil
             liveCost = 0
-            liveModel = message["model"]?.stringValue ?? liveModel
+            liveModel = TranscriptLoader.qualifiedModel(in: message) ?? liveModel
             lastSnapshotAt = .distantPast
             if let id = liveMessageID, let created = liveCreatedAt {
                 await publish(
@@ -1033,7 +1041,7 @@ actor OmpSession {
         let cost = usage?["cost"]?["total"]?.doubleValue ?? 0
         liveCost += cost
         turnCost += cost
-        if let model = message["model"]?.stringValue { liveModel = model }
+        if let model = TranscriptLoader.qualifiedModel(in: message) { liveModel = model }
     }
 
     private func materializedParts() -> [Part] {

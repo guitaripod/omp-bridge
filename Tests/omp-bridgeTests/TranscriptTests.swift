@@ -78,6 +78,46 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         #expect(claimed.first?.ompSessionID == "22222222-2222-7222-8222-222222222222")
     }
 
+    /// omp writes an empty title row at the top of every session and stores a message's model
+    /// apart from its provider; the list names the session after its first prompt and the
+    /// model in `provider/id` form without waiting for anyone to open it.
+    @Test func discoveredSessionIsNamedAndDescribedFromTheTranscript() {
+        let root = makeTempDir("sessions-light") + "/-home-tmp"
+        try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        _ = writeTranscript(root, lines: [
+            #"{"type":"title","v":1,"title":"","updatedAt":"2026-09-16T15:26:25.438Z"}"#,
+            #"{"type":"session","version":3,"id":"01a0aad3-8a9e-7456-bcb3-bb6bf4db9b77","cwd":"/home/marcus/tmp"}"#,
+            #"{"type":"model_change","model":"llama-swap/qwen38-nvfp4"}"#,
+            #"{"type":"thinking_level_change","thinkingLevel":"low","configured":null}"#,
+            #"{"type":"model_change","model":"openrouter/stealth/union-alpha","role":"temporary"}"#,
+            #"{"type":"thinking_level_change","thinkingLevel":null,"configured":null}"#,
+            #"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Hi"}],"timestamp":1789572398380}}"#,
+            #"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Hey."}],"provider":"openrouter","model":"stealth/union-alpha","timestamp":1789572402000}}"#,
+        ])
+        let found = Discovery.scan(root: root, hidden: [], claimedFiles: [])
+        #expect(found.count == 1)
+        #expect(found.first?.title == "Hi")
+        #expect(found.first?.model == "openrouter/stealth/union-alpha")
+        #expect(found.first?.effort == "")
+
+        let loaded = TranscriptLoader.load(sessionFile: found.first!.file)
+        #expect(loaded.model == "openrouter/stealth/union-alpha")
+        #expect(loaded.effort == "")
+        #expect(loaded.messages.last?.model == "openrouter/stealth/union-alpha")
+    }
+
+    @Test func discoveredSessionWithNoPromptStaysAPlaceholder() {
+        let root = makeTempDir("sessions-empty") + "/-home-tmp"
+        try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        _ = writeTranscript(root, lines: [
+            #"{"type":"title","v":1,"title":""}"#,
+            #"{"type":"session","id":"01a0aad3-0000-7456-bcb3-bb6bf4db9b77","cwd":"/home/marcus/tmp"}"#,
+            #"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"   "}]}}"#,
+        ])
+        let found = Discovery.scan(root: root, hidden: [], claimedFiles: [])
+        #expect(found.first?.title == "Session")
+    }
+
     @Test func adoptExternallyFillsState() async throws {
         let dir = makeTempDir("adopt")
         let path = writeTranscript(dir, lines: [

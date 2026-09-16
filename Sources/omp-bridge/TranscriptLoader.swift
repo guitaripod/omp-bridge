@@ -12,6 +12,22 @@ struct LoadedTranscript {
 }
 
 enum TranscriptLoader {
+    /// The level a `thinking_level_change` row sets. omp writes the row with `thinkingLevel: null`
+    /// when the model it just switched to takes no level, and reading only the string left the
+    /// previous model's "low" standing on a model that has no such dial.
+    static func thinkingLevel(in row: JSONValue) -> String {
+        row["thinkingLevel"]?.stringValue ?? ""
+    }
+
+    /// The model an assistant message names, in omp's own `provider/id` form. The transcript
+    /// stores the two halves apart, and the bare id alone ("stealth/union-alpha") is not a key
+    /// any catalog answers to, so a client could never find the model's levels for it.
+    static func qualifiedModel(in message: JSONValue) -> String? {
+        guard let model = message["model"]?.stringValue, !model.isEmpty else { return nil }
+        guard let provider = message["provider"]?.stringValue, !provider.isEmpty else { return model }
+        return "\(provider)/\(model)"
+    }
+
     static func load(sessionFile: String) -> LoadedTranscript {
         var result = LoadedTranscript()
         guard let raw = FileManager.default.contents(atPath: sessionFile) else { return result }
@@ -37,7 +53,7 @@ enum TranscriptLoader {
             case "model_change":
                 if let model = value["model"]?.stringValue { result.model = model }
             case "thinking_level_change":
-                if let level = value["thinkingLevel"]?.stringValue { result.effort = level }
+                result.effort = thinkingLevel(in: value)
             case "title":
                 if let title = value["title"]?.stringValue, !title.isEmpty { result.title = title }
             case "compaction":
@@ -97,7 +113,7 @@ enum TranscriptLoader {
                         Message(
                             id: "a-\(value["id"]?.stringValue ?? UUID().uuidString)",
                             role: .assistant, parts: parts, createdAt: timestamp, seconds: nil,
-                            model: message["model"]?.stringValue, usage: counts, context: counts,
+                            model: qualifiedModel(in: message), usage: counts, context: counts,
                             costUSD: usage?["cost"]?["total"]?.doubleValue))
                 case "toolResult":
                     guard let callID = message["toolCallId"]?.stringValue ?? message["toolCallID"]?.stringValue else { continue }
