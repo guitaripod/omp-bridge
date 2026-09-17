@@ -23,6 +23,10 @@ for the route table and mapping rules before touching anything.
   correlation. The only place that talks to omp's stdio.
 - `OmpSession.swift` — one conversation: event mapping (omp frames → BridgeEvents), queueing,
   ask-dialog handling, spend accumulation, title derivation.
+- `Titler.swift` — the model-written session title, a one-shot `omp -p` call after the first
+  turn. omp only fills its own transcript title row from its terminal UI, so under the bridge
+  that row is always empty and this is the only namer. `titledByModel` in the store says a
+  session has been named; `OMP_TITLE_MODEL` overrides the engine, which is the session's own.
 - `App.swift` — session registry, discovery merge, observer sweep, interruption recovery,
   update plumbing.
 - `Hub.swift` — epoch/seq ring for `/stream`; replay or `reset`, never silence.

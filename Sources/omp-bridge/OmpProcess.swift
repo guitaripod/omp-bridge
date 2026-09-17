@@ -128,7 +128,7 @@ actor OmpProcess {
     /// `omp` is a `#!/usr/bin/env bun` script, and a service started at boot carries a PATH
     /// without `~/.bun/bin`, so the binary's own directory goes in front of whatever PATH the
     /// bridge inherited or the process cannot start at all.
-    private static func pathReachingRuntime(of binary: String, base: String?) -> String {
+    static func pathReachingRuntime(of binary: String, base: String?) -> String {
         let dir = (binary as NSString).deletingLastPathComponent
         var parts = (base ?? "/usr/local/bin:/usr/bin").split(separator: ":").map(String.init)
         parts.removeAll { $0 == dir }

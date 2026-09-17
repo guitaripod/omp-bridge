@@ -61,11 +61,38 @@ import Testing
 
     @Test func derivedTitle() {
         #expect(OmpSession.derivedTitle(from: "Fix the bug") == "Fix the bug")
-        #expect(OmpSession.derivedTitle(from: String(repeating: "x", count: 80)).count == 48)
+        #expect(OmpSession.derivedTitle(from: String(repeating: "x", count: 80)) == "X" + String(repeating: "x", count: 47) + "…")
         #expect(OmpSession.derivedTitle(from: "") == "New chat")
         #expect(OmpSession.isPlaceholderTitle("New chat"))
         #expect(OmpSession.isPlaceholderTitle("  "))
         #expect(!OmpSession.isPlaceholderTitle("Fix the bug"))
+    }
+
+    @Test func derivedTitleReadsAPromptRatherThanSlicingIt() {
+        #expect(OmpSession.derivedTitle(from: "fix the bug") == "Fix the bug")
+        #expect(OmpSession.derivedTitle(from: "iPhone build fails") == "iPhone build fails")
+        #expect(OmpSession.derivedTitle(from: "  spaced   out   words ") == "Spaced out words")
+        #expect(
+            OmpSession.derivedTitle(
+                from: "cheap one-way flight to southeast asia in September for two people")
+                == "Cheap one-way flight to southeast asia in…")
+    }
+
+    @Test func derivedTitleOfASlashCommandIsWhatWasAskedOfIt() {
+        #expect(OmpSession.derivedTitle(from: "/flyr Tel Aviv") == "Tel Aviv")
+        #expect(OmpSession.derivedTitle(from: "/compact") == "Compact")
+        #expect(OmpSession.derivedTitle(from: "/code-review") == "Code review")
+        #expect(OmpSession.derivedTitle(from: "/model\nactually rename the file") == "Actually rename the file")
+    }
+
+    @Test func aTitleIsTakenOutOfWhateverTheEnginePrinted() {
+        #expect(Titler.clean("Fix compaction cell icon\n") == "Fix compaction cell icon")
+        #expect(Titler.clean("\"Quoted title.\"") == "Quoted title")
+        #expect(Titler.clean("Title: Rename the session") == "Rename the session")
+        #expect(Titler.clean("<think>hmm, six words</think>\nWarm local engine writes names") == "Warm local engine writes names")
+        #expect(Titler.clean("Here you go:\nShip the release") == "Ship the release")
+        #expect(Titler.clean("   \n  ") == nil)
+        #expect(Titler.clean(String(repeating: "word ", count: 20)) == nil)
     }
 }
 

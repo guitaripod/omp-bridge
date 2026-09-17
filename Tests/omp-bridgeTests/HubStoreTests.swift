@@ -48,7 +48,7 @@ import Testing
             SessionRecord(
                 id: "a", title: "A", directory: "/tmp", model: "m", effort: "medium",
                 createdAt: Date(), updatedAt: Date(), ompSessionID: "omp-1",
-                ompSessionFile: "/tmp/none.jsonl", customTitle: true, autoTitled: false,
+                ompSessionFile: "/tmp/none.jsonl", customTitle: true, titledByModel: false,
                 turns: [TurnRecord(at: Date(), seconds: 1, model: "m", calls: 1, tokens: counts, costUSD: 0.1, prompt: "p")],
                 totalCostUSD: 0.1, totalTokens: counts, lastCostUSD: 0.1, lastTokens: 15,
                 interruption: nil, autoResume: nil))

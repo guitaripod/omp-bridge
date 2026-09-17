@@ -11,7 +11,10 @@ struct SessionRecord: Codable, Sendable {
     var ompSessionID: String?
     var ompSessionFile: String?
     var customTitle: Bool?
-    var autoTitled: Bool?
+    /// Set only by the model titler. The key is deliberately not the older `autoTitled`, which
+    /// also stood for a title cut out of the first prompt: a record written before there was a
+    /// namer decodes this as nil and so is named properly the first time it is restored.
+    var titledByModel: Bool?
     var turns: [TurnRecord]
     var totalCostUSD: Double
     var totalTokens: TokenCounts

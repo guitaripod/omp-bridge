@@ -11,6 +11,9 @@ struct Config: Sendable {
     let srcPath: String?
     let defaultModel: String?
     let defaultEffort: String
+    /// The engine that writes session titles. Unset means the session's own model, which is the
+    /// one already loaded on this machine and so the cheapest thing to ask.
+    let titleModel: String?
 
     static func load() -> Config {
         let env = ProcessInfo.processInfo.environment
@@ -37,7 +40,8 @@ struct Config: Sendable {
             stateDir: resolvedState,
             srcPath: src.isEmpty ? nil : src,
             defaultModel: env["OMP_MODEL"].flatMap { $0.isEmpty ? nil : $0 },
-            defaultEffort: env["OMP_EFFORT"] ?? "medium"
+            defaultEffort: env["OMP_EFFORT"] ?? "medium",
+            titleModel: env["OMP_TITLE_MODEL"].flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
@@ -59,5 +63,11 @@ struct Config: Sendable {
 
     var attachmentsDir: String {
         stateDir + "/attachments"
+    }
+
+    /// Where the one-shot title calls run: outside any workspace, so a titler never reads a repo
+    /// and never leaves a transcript where a chat would be discovered.
+    var titlerWorkdir: String {
+        stateDir + "/titler"
     }
 }

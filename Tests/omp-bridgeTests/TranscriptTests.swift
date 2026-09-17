@@ -9,7 +9,7 @@ private func makeSession(
     let config = Config(
         port: 0, bind: "127.0.0.1", password: "x", workdir: directory,
         ompBin: "/nonexistent/omp", storePath: directory + "/sessions.json",
-        stateDir: directory, srcPath: nil, defaultModel: nil, defaultEffort: "medium")
+        stateDir: directory, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil)
     return OmpSession(
         title: "Test", directory: directory, model: "", effort: "medium",
         ompSessionFile: file, config: config, hub: Hub(), quietRegistry: QuietRegistry())
@@ -143,7 +143,7 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         let config = Config(
             port: 0, bind: "127.0.0.1", password: "x", workdir: dir,
             ompBin: "/nonexistent/omp", storePath: dir + "/sessions.json",
-            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium")
+            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil)
         let app = App(config: config)
         let session = await app.adopt(file: path, ompID: "sess-live")
         #expect(await session.snapshotMessages().count == 2)
@@ -165,7 +165,7 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         let config = Config(
             port: 0, bind: "127.0.0.1", password: "x", workdir: dir,
             ompBin: "/nonexistent/omp", storePath: dir + "/sessions.json",
-            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium")
+            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil)
         let app = App(config: config)
         let adopted = await app.adopt(file: path, ompID: "sess-dates")
         #expect(abs(await adopted.createdDate().timeIntervalSince(updated)) < 1)
@@ -201,7 +201,7 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
             SessionRecord(
                 id: "bridge-session", title: "handoff prompt", directory: dir, model: "",
                 effort: "medium", createdAt: Date(), updatedAt: Date(), ompSessionID: ompID,
-                ompSessionFile: path, customTitle: false, autoTitled: true, turns: [],
+                ompSessionFile: path, customTitle: false, titledByModel: true, turns: [],
                 totalCostUSD: 0, totalTokens: TokenCounts(), lastCostUSD: nil, lastTokens: nil,
                 interruption: nil, autoResume: nil, ownedTranscriptIDs: owned))
         await store.remove("bridge-session")

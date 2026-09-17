@@ -29,6 +29,9 @@ actor App {
     private var ownedTranscriptsBySession: [String: Set<String>] = [:]
     private let discoveryCache = DiscoveryCache()
     private var lastStoredAt: [String: Date] = [:]
+    /// A model-written title lands without moving `updatedAt`, so the store has to be told about
+    /// the name as well as the clock or the new title would live only until the next restart.
+    private var lastStoredTitle: [String: String] = [:]
 
     init(config: Config) {
         self.config = config
@@ -50,7 +53,33 @@ actor App {
         }
         await restorePersistedSessions()
         await recoverInterruptedTurns()
+        Task { [weak self] in await self?.backfillTitles() }
     }
+
+    /// Chats that ran before anything could name them keep the slice of first prompt they were
+    /// born with, and nothing about opening one would ever change that — so the recent ones are
+    /// named once, in the background. The flags persist, so this walks a shrinking list and then
+    /// has nothing left to do.
+    ///
+    /// One at a time, and neighbours by engine: a machine serving local models one at a time would
+    /// otherwise load and unload the same weights down the whole list.
+    private func backfillTitles() async {
+        let floor = Date().addingTimeInterval(-Self.titleBackfillWindow)
+        var candidates: [(updatedAt: Date, model: String, session: OmpSession)] = []
+        for (_, session) in sessions {
+            let updatedAt = await session.updatedDate()
+            guard updatedAt > floor else { continue }
+            candidates.append((updatedAt, await session.modelName(), session))
+        }
+        let recent = candidates.sorted { $0.updatedAt > $1.updatedAt }
+            .prefix(Self.titleBackfillLimit)
+        for entry in recent.sorted(by: { $0.model < $1.model }) {
+            await entry.session.autoTitleNow()
+        }
+    }
+
+    private static let titleBackfillLimit = 25
+    private static let titleBackfillWindow: TimeInterval = 14 * 24 * 60 * 60
 
     // MARK: sessions
 
@@ -233,8 +262,11 @@ actor App {
             await session.refreshFromTranscriptIfIdle()
             ownedTranscriptsBySession[session.id] = Set(await session.ownedTranscriptIDs())
             let updatedAt = await session.updatedDate()
-            guard lastStoredAt[session.id] != updatedAt else { continue }
+            let title = await session.titleText()
+            guard lastStoredAt[session.id] != updatedAt || lastStoredTitle[session.id] != title
+            else { continue }
             lastStoredAt[session.id] = updatedAt
+            lastStoredTitle[session.id] = title
             await store.upsert(await record(for: session))
         }
     }
@@ -256,7 +288,7 @@ actor App {
             ompSessionID: await session.currentOmpSessionID(),
             ompSessionFile: await session.sessionFile(),
             customTitle: await session.customTitleValue(),
-            autoTitled: await session.autoTitledValue(),
+            titledByModel: await session.autoTitledValue(),
             turns: await session.turnsSnapshot(),
             totalCostUSD: await session.spendTotalsSnapshot().costUSD,
             totalTokens: await session.spendTotalsSnapshot().tokens,
@@ -298,13 +330,16 @@ actor App {
             guard let file = record.ompSessionFile,
                 FileManager.default.fileExists(atPath: file)
             else { continue }
+            let loaded = TranscriptLoader.load(sessionFile: file)
             let session = OmpSession(
                 id: record.id, title: record.title,
                 directory: record.directory ?? config.workdir,
                 model: record.model, effort: record.effort, ompSessionFile: file,
                 config: config, hub: hub, quietRegistry: quietRegistry, journal: journal,
-                restoredDates: (record.createdAt, record.updatedAt))
-            await session.adoptExternally(loaded: TranscriptLoader.load(sessionFile: file), ompID: record.ompSessionID)
+                restoredDates: (record.createdAt, record.updatedAt),
+                namedByHand: record.customTitle ?? false,
+                namedByModel: record.titledByModel ?? false)
+            await session.adoptExternally(loaded: loaded, ompID: record.ompSessionID)
             sessions[record.id] = session
             ownedTranscriptsBySession[record.id] = Set(await session.ownedTranscriptIDs())
         }

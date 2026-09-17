@@ -52,6 +52,7 @@ actor OmpSession {
     private(set) var messages: [Message] = []
     private(set) var customTitle = false
     private(set) var autoTitled = false
+    private var titling = false
 
     private let config: Config
     private let hub: Hub
@@ -120,10 +121,13 @@ actor OmpSession {
         id: String = UUID().uuidString, title: String = "New chat", directory: String,
         model: String, effort: String, ompSessionFile: String? = nil, config: Config, hub: Hub,
         quietRegistry: QuietRegistry, journal: TurnJournal? = nil,
-        restoredDates: (createdAt: Date, updatedAt: Date)? = nil
+        restoredDates: (createdAt: Date, updatedAt: Date)? = nil,
+        namedByHand: Bool = false, namedByModel: Bool = false
     ) {
         self.id = id
         self.title = title
+        self.customTitle = namedByHand
+        self.autoTitled = namedByModel
         self.directory = directory
         self.model = model
         self.effort = effort
@@ -150,12 +154,96 @@ actor OmpSession {
     /// A conversation names itself after the first thing said in it. A session the bridge started
     /// used to keep its placeholder forever — only a transcript adopted from disk derived a title —
     /// so every chat opened from a client listed as a new one however long it had run.
+    ///
+    /// The name this leaves is provisional: `autoTitled` stays false so the model-written title
+    /// can still land on top of it once the first turn has an answer to read.
     private func titleFromFirstPrompt(_ text: String) {
         guard !customTitle, !autoTitled, Self.isPlaceholderTitle(title) else { return }
         let derived = Self.derivedTitle(from: text)
         guard derived != "New chat" else { return }
         title = derived
+    }
+
+    /// A conversation is named by a model once there is an exchange to name — a short `omp -p`
+    /// call on the session's own engine, which is the one already warm on this machine. omp's own
+    /// title row is never filled in under the bridge, so this is the only thing that turns a slice
+    /// of first prompt into a name. A rename by hand always wins, including against a call already
+    /// in flight, and a failed call simply leaves the provisional name standing.
+    func autoTitleIfUnnamed() {
+        guard let call = titleCall() else { return }
+        Task { [weak self] in
+            await self?.applyAutoTitle(await Self.write(call))
+        }
+    }
+
+    /// The same naming, awaited, so the backfill of sessions that were named before there was a
+    /// namer can walk them one at a time — twenty calls at once would each pay for loading a cold
+    /// engine.
+    func autoTitleNow() async {
+        guard let call = titleCall() else { return }
+        applyAutoTitle(await Self.write(call))
+    }
+
+    private struct TitleCall: Sendable {
+        let binary: String
+        let model: String?
+        let cwd: String
+        let user: String
+        let assistant: String
+    }
+
+    private static func write(_ call: TitleCall) async -> String? {
+        await Titler.title(
+            binary: call.binary, model: call.model, cwd: call.cwd, user: call.user,
+            assistant: call.assistant)
+    }
+
+    private func titleCall() -> TitleCall? {
+        guard !customTitle, !autoTitled, !titling,
+            let user = firstText(of: .user),
+            let assistant = firstText(of: .assistant) ?? firstReasoning()
+        else { return nil }
+        titling = true
+        return TitleCall(
+            binary: config.ompBin, model: config.titleModel ?? (model.isEmpty ? nil : model),
+            cwd: config.titlerWorkdir, user: user, assistant: assistant)
+    }
+
+    /// The name lands without touching `updatedAt`: a title written minutes or days after the
+    /// last word was said must not shuffle the chat back to the top of the list.
+    private func applyAutoTitle(_ written: String?) {
+        titling = false
+        guard let written, !customTitle, !autoTitled else { return }
+        title = written
         autoTitled = true
+    }
+
+    /// The first thing this side of the conversation actually said. Not simply the first message:
+    /// an engine that opens a turn with thinking, or with a tool call it narrates later, leaves a
+    /// message whose text is empty, and a title read off that one would never be asked for.
+    private func firstText(of role: Role) -> String? {
+        for message in messages where message.role == role {
+            let text = message.parts.compactMap { part in
+                if case .text(let value) = part { return value }
+                return nil
+            }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { return text }
+        }
+        return nil
+    }
+
+    /// What the engine was thinking, for a turn that said nothing out loud. A coding turn is often
+    /// all tool calls and reasoning — real work, and nothing a title could be read off without
+    /// this.
+    private func firstReasoning() -> String? {
+        for message in messages where message.role == .assistant {
+            for part in message.parts {
+                guard case .reasoning(let value) = part else { continue }
+                let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { return text }
+            }
+        }
+        return nil
     }
 
     static func isPlaceholderTitle(_ title: String) -> Bool {
@@ -568,6 +656,7 @@ actor OmpSession {
         turnStartedAt = nil
         settleUnansweredAsk()
         let settled = settleDanglingTools()
+        autoTitleIfUnnamed()
         Task {
             if let unfinished { await publish(.messageUpserted(unfinished)) }
             for message in settled where message.id != unfinished?.id {
@@ -1206,9 +1295,8 @@ actor OmpSession {
             messages = loaded.messages
             adoptSpend(from: loaded.messages)
             ompSessionID = loaded.sessionID
-            if let first = loaded.firstUserText, !customTitle {
+            if let first = loaded.firstUserText, !customTitle, !autoTitled {
                 title = Self.derivedTitle(from: first)
-                autoTitled = true
             }
         }
     }
@@ -1276,13 +1364,54 @@ actor OmpSession {
             }
     }
 
-    static func derivedTitle(from text: String) -> String {
-        let line = text
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .first.map(String.init) ?? text
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.count <= 48 { return trimmed.isEmpty ? "New chat" : trimmed }
-        return String(trimmed.prefix(48))
+    /// A readable row title from a raw prompt: the first line that says something, whitespace
+    /// collapsed, cut at a word boundary and given a capital where one is wanted. The
+    /// model-written title replaces this once the first turn lands; until then this is the whole
+    /// of what a list can say about the chat, so a prompt that is one slash command is worth what
+    /// was asked of it rather than the command line itself.
+    static func derivedTitle(from text: String, fallback: String = "New chat") -> String {
+        let lines = text
+            .replacingOccurrences(of: "<[^>]{1,80}>", with: " ", options: .regularExpression)
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard var title = spoken(in: lines) else { return fallback }
+        title = title.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        if title.count > 48 {
+            let head = String(title.prefix(48))
+            if let space = head.lastIndex(of: " "),
+                head.distance(from: head.startIndex, to: space) > 24
+            {
+                title = String(head[..<space]) + "…"
+            } else {
+                title = head + "…"
+            }
+        }
+        title = title.trimmingCharacters(in: CharacterSet(charactersIn: " .,:;–—-"))
+        guard !title.isEmpty else { return fallback }
+        return capitalizedLeadingWord(title)
+    }
+
+    /// What a prompt is actually about, given its lines. A leading slash command is worth its
+    /// argument — "/flyr Tel Aviv" is a chat about Tel Aviv — and a bare command yields to the
+    /// next line that is not one, falling back to its own name when there is nothing else.
+    private static func spoken(in lines: [String]) -> String? {
+        guard let first = lines.first else { return nil }
+        guard first.hasPrefix("/") else { return first }
+        let parts = first.dropFirst().split(separator: " ", maxSplits: 1)
+        let argument = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+        if !argument.isEmpty { return argument }
+        if let spelled = lines.dropFirst().first(where: { !$0.hasPrefix("/") }) { return spelled }
+        guard let command = parts.first, !command.isEmpty else { return nil }
+        return command.replacingOccurrences(of: "-", with: " ")
+    }
+
+    /// A sentence capital, but never one that rewrites a name the person spelled: a first word
+    /// carrying a capital of its own ("iPhone", "macOS", "SwiftUI") is left exactly as typed.
+    private static func capitalizedLeadingWord(_ title: String) -> String {
+        let word = title.prefix { $0 != " " }
+        guard !word.contains(where: \.isUppercase) else { return title }
+        return title.prefix(1).uppercased() + title.dropFirst()
     }
 }
 
@@ -1326,9 +1455,8 @@ extension OmpSession {
         if let cwd = loaded.cwd { directory = cwd }
         if let model = loaded.model, model != self.model { self.model = model }
         if let effort = loaded.effort { self.effort = effort }
-        if let first = loaded.firstUserText, !customTitle {
+        if let first = loaded.firstUserText, !customTitle, !autoTitled {
             title = Self.derivedTitle(from: first)
-            autoTitled = true
         }
         if let created = loaded.messages.first?.createdAt { createdAt = created }
         if let updated = loaded.updatedAt { updatedAt = max(updated, createdAt) }
