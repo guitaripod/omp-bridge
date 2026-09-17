@@ -11,6 +11,10 @@ import Foundation
 enum Titler {
     /// The title for an exchange, or nil when the call failed, timed out or came back with
     /// something that is not a title. A nil is never fatal: the row keeps the name it has.
+    ///
+    /// The session's own engine is asked first and whatever omp reaches for by default second, so
+    /// a chat is not left with a command line for a name because the model it happened to run on
+    /// wants a key this service does not carry, or is too large to load for six words.
     static func title(
         binary: String, model: String?, cwd: String, user: String, assistant: String
     ) async -> String? {
@@ -23,10 +27,13 @@ enum Titler {
             User: \(condense(user, cap: 600))
             Assistant: \(condense(assistant, cap: 400))
             """
-        guard let raw = await run(binary: binary, model: model, cwd: cwd, prompt: prompt) else {
-            return nil
+        if let raw = await run(binary: binary, model: model, cwd: cwd, prompt: prompt),
+            let named = clean(raw)
+        {
+            return named
         }
-        return clean(raw)
+        guard model != nil else { return nil }
+        return await run(binary: binary, model: nil, cwd: cwd, prompt: prompt).flatMap(clean)
     }
 
     private static func condense(_ text: String, cap: Int) -> String {
