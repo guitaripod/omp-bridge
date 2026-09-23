@@ -23,6 +23,10 @@ struct SessionRecord: Codable, Sendable {
     var interruption: Interruption?
     var autoResume: Bool?
     var ownedTranscriptIDs: [String]?
+    /// When a fork was made. Its transcript is a copy whose every row is older than the fork, and a
+    /// chat is dated by what was said in it, so this is the one thing that keeps a fork nobody has
+    /// spoken in yet where it was born.
+    var forkedAt: Date?
 }
 
 actor SessionStore {

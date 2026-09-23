@@ -5,6 +5,9 @@ struct DiscoveredSession: Sendable {
     let file: String
     let title: String
     let directory: String?
+    let createdAt: Date
+    /// When the conversation last moved, never the file's date: the engine signs a transcript
+    /// every time it stops, and a restart of this service stops every engine it had open.
     let updatedAt: Date
     let firstUserText: String?
     let model: String?
@@ -19,6 +22,8 @@ final class DiscoveryCache {
         let ompSessionID: String?
         let title: String?
         let cwd: String?
+        let began: Date?
+        let lastSaid: Date?
         let firstUserText: String?
         let model: String?
         let effort: String?
@@ -74,8 +79,9 @@ enum Discovery {
                 guard let loaded = loadLight(path) else { continue }
                 light = DiscoveryCache.Light(
                     mtime: mtime, ompSessionID: loaded.ompSessionID, title: loaded.title,
-                    cwd: loaded.cwd, firstUserText: loaded.firstUserText,
-                    model: loaded.model, effort: loaded.effort)
+                    cwd: loaded.cwd, began: loaded.began,
+                    lastSaid: TranscriptClock.read(atPath: path).lastSaid,
+                    firstUserText: loaded.firstUserText, model: loaded.model, effort: loaded.effort)
                 cache?.lights[path] = light
             }
             if let id = light.ompSessionID, hidden.contains(id) { continue }
@@ -86,7 +92,8 @@ enum Discovery {
                         ?? file.replacingOccurrences(of: ".jsonl", with: ""),
                     file: path, title: listedTitle(light),
                     directory: light.cwd,
-                    updatedAt: mtime,
+                    createdAt: light.began ?? light.lastSaid ?? mtime,
+                    updatedAt: light.lastSaid ?? light.began ?? mtime,
                     firstUserText: light.firstUserText,
                     model: light.model, effort: light.effort))
         }
@@ -107,6 +114,7 @@ enum Discovery {
         var ompSessionID: String?
         var title: String?
         var cwd: String?
+        var began: Date?
         var firstUserText: String?
         var model: String?
         var effort: String?
@@ -125,6 +133,7 @@ enum Discovery {
             case "session":
                 parse.ompSessionID = value["id"]?.stringValue
                 parse.cwd = value["cwd"]?.stringValue
+                parse.began = value["timestamp"]?.stringValue.flatMap(TranscriptLoader.isoDate)
             case "title":
                 if let t = value["title"]?.stringValue, !t.isEmpty { parse.title = t }
             case "model_change":

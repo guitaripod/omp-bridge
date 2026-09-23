@@ -49,6 +49,7 @@ actor OmpSession {
     private(set) var ompSessionFile: String?
     private(set) var createdAt: Date
     private(set) var updatedAt: Date
+    let forkedAt: Date?
     private(set) var messages: [Message] = []
     private(set) var customTitle = false
     private(set) var autoTitled = false
@@ -78,6 +79,11 @@ actor OmpSession {
     private var liveModel: String?
     private var lastSnapshotAt = Date.distantPast
     private var lastTranscriptMtime: Date?
+    private var transcriptActivity = TranscriptActivity()
+    /// The moment this bridge's own last turn was over. What its engine wrote up to then belongs to
+    /// that turn, never to one somebody is running from a terminal — even when the engine died with
+    /// a tool call still open.
+    private var ownTurnSettledAt = Date.distantPast
     private var turnStartedAt: Date?
     private var turnPrompt: String?
     private var turnCalls = 0
@@ -121,7 +127,7 @@ actor OmpSession {
         id: String = UUID().uuidString, title: String = "New chat", directory: String,
         model: String, effort: String, ompSessionFile: String? = nil, config: Config, hub: Hub,
         quietRegistry: QuietRegistry, journal: TurnJournal? = nil,
-        restoredDates: (createdAt: Date, updatedAt: Date)? = nil,
+        restoredDates: (createdAt: Date, updatedAt: Date)? = nil, forkedAt: Date? = nil,
         namedByHand: Bool = false, namedByModel: Bool = false
     ) {
         self.id = id
@@ -132,8 +138,9 @@ actor OmpSession {
         self.model = model
         self.effort = effort
         self.ompSessionFile = ompSessionFile
-        self.createdAt = restoredDates?.createdAt ?? Date()
-        self.updatedAt = restoredDates?.updatedAt ?? Date()
+        self.createdAt = restoredDates?.createdAt ?? forkedAt ?? Date()
+        self.updatedAt = restoredDates?.updatedAt ?? forkedAt ?? Date()
+        self.forkedAt = forkedAt
         self.config = config
         self.hub = hub
         self.quietRegistry = quietRegistry
@@ -251,10 +258,11 @@ actor OmpSession {
         return trimmed.isEmpty || trimmed == "New chat" || trimmed.hasPrefix("New session")
     }
 
+    /// A name is not something said, so it leaves the chat where the conversation put it — as
+    /// the model's title does, and as the transcript's own clock will after the next restart.
     func rename(_ newTitle: String) {
         title = newTitle
         customTitle = true
-        touch()
     }
 
     func setAutoResume(_ enabled: Bool) {}
@@ -608,6 +616,7 @@ actor OmpSession {
         seam.createdAt = Date()
         messages.append(seam)
         touch()
+        settleOwnTurn()
         await publish(.messageUpserted(seam))
     }
 
@@ -642,6 +651,7 @@ actor OmpSession {
     private func finishTurn() {
         guard running else { return }
         running = false
+        settleOwnTurn()
         let unfinished = closeLiveMessage()
         if let startedAt = turnStartedAt {
             let record = TurnRecord(
@@ -1302,6 +1312,9 @@ actor OmpSession {
     }
 
     static let externalActivityWindow: TimeInterval = 180
+    /// How long after this bridge closed its own turn a row the engine files is still that turn's
+    /// tail — an abort's last words land a moment after the abort has answered.
+    static let ownTailSlack: TimeInterval = 5
 
     /// The ledger of a transcript the bridge did not run — one started in a terminal, or one that
     /// grew there while the bridge was idle — read off the usage every assistant message carries.
@@ -1458,25 +1471,40 @@ extension OmpSession {
         if let first = loaded.firstUserText, !customTitle, !autoTitled {
             title = Self.derivedTitle(from: first)
         }
-        if let created = loaded.messages.first?.createdAt { createdAt = created }
+        if let created = loaded.messages.first?.createdAt { createdAt = forkedAt ?? created }
         if let updated = loaded.updatedAt { updatedAt = max(updated, createdAt) }
+        transcriptActivity = loaded.activity
+        lastTranscriptMtime = loaded.modifiedAt
     }
 
+    /// Follows a transcript that something other than this bridge's own turn is writing. The chat's
+    /// clock moves only with what is said in it and it reads live only while a turn is open there,
+    /// so the rows an engine files on its way out — one for every chat a restart closed — neither
+    /// move a chat to the top nor wear it as live.
     func refreshFromTranscriptIfIdle() async {
         guard !running, compacting == false, queued.isEmpty, let file = ompSessionFile else {
             externallyLive = false
             return
         }
         let mtime = TranscriptLoader.mtime(file)
-        let threshold = Date().addingTimeInterval(-Self.externalActivityWindow)
-        externallyLive = (mtime ?? .distantPast) > threshold
-        guard mtime != lastTranscriptMtime else { return }
-        lastTranscriptMtime = mtime
-        let loaded = TranscriptLoader.load(sessionFile: file)
-        if loaded.messages.count != messages.count {
-            await adoptExternally(loaded: loaded, ompID: loaded.sessionID)
-            touch()
+        if mtime != lastTranscriptMtime {
+            lastTranscriptMtime = mtime
+            let loaded = TranscriptLoader.load(sessionFile: file)
+            transcriptActivity = loaded.activity
+            if loaded.messages.count != messages.count {
+                await adoptExternally(loaded: loaded, ompID: loaded.sessionID)
+            } else if let said = loaded.activity.lastSaid, said > updatedAt {
+                updatedAt = said
+            }
         }
+        let horizon = max(
+            Date().addingTimeInterval(-Self.externalActivityWindow),
+            ownTurnSettledAt.addingTimeInterval(Self.ownTailSlack))
+        externallyLive = transcriptActivity.isLive(after: horizon)
+    }
+
+    func settleOwnTurn() {
+        ownTurnSettledAt = Date()
     }
 
     func sessionFile() -> String? { ompSessionFile }

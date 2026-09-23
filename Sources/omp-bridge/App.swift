@@ -198,7 +198,7 @@ actor App {
             model: await source.modelName(),
             effort: await source.effortLevel(),
             ompSessionFile: FileManager.default.fileExists(atPath: copyPath) ? copyPath : nil,
-            config: config, hub: hub, quietRegistry: quietRegistry, journal: journal)
+            config: config, hub: hub, quietRegistry: quietRegistry, journal: journal, forkedAt: Date())
         if FileManager.default.fileExists(atPath: copyPath) {
             let loaded = TranscriptLoader.load(sessionFile: copyPath)
             await session.adoptExternally(loaded: loaded, ompID: nil)
@@ -224,7 +224,7 @@ actor App {
             byID[item.ompSessionID] = SessionSummary(
                 id: item.ompSessionID, title: item.title, directory: item.directory,
                 model: item.model ?? "", effort: item.effort ?? "",
-                createdAt: item.updatedAt, updatedAt: item.updatedAt)
+                createdAt: item.createdAt, updatedAt: item.updatedAt)
         }
         return byID
     }
@@ -296,7 +296,8 @@ actor App {
             lastTokens: await session.turnsSnapshot().last?.tokens.total,
             interruption: interruptedBySession[session.id],
             autoResume: nil,
-            ownedTranscriptIDs: ownedTranscriptIDs(for: session))
+            ownedTranscriptIDs: ownedTranscriptIDs(for: session),
+            forkedAt: session.forkedAt)
     }
 
     func flushAll() async {
@@ -336,7 +337,7 @@ actor App {
                 directory: record.directory ?? config.workdir,
                 model: record.model, effort: record.effort, ompSessionFile: file,
                 config: config, hub: hub, quietRegistry: quietRegistry, journal: journal,
-                restoredDates: (record.createdAt, record.updatedAt),
+                restoredDates: (record.createdAt, record.updatedAt), forkedAt: record.forkedAt,
                 namedByHand: record.customTitle ?? false,
                 namedByModel: record.titledByModel ?? false)
             await session.adoptExternally(loaded: loaded, ompID: record.ompSessionID)
@@ -373,10 +374,10 @@ actor App {
                 detectedAt: Date(), ompSessionFile: entry.ompSessionFile, progress: progress,
                 queued: [], resumedAt: nil)
             interruptedBySession[entry.sessionID] = interruption
-            if sessions[entry.sessionID] == nil, let file = entry.ompSessionFile,
-                FileManager.default.fileExists(atPath: file)
-            {
-                _ = await adopt(file: file, ompID: nil)
+            if let owner = sessions[entry.sessionID] {
+                await owner.settleOwnTurn()
+            } else if let file = entry.ompSessionFile, FileManager.default.fileExists(atPath: file) {
+                await adopt(file: file, ompID: nil).settleOwnTurn()
             }
             await journal.clear(entry.sessionID)
             await hub.publish(.session(id: entry.sessionID, event: .interrupted(interruption)))

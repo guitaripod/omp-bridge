@@ -4,6 +4,11 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.6.1 — 2026-09-23
+
+- Restarting or updating the bridge no longer moves every chat to the top of the list: a chat is dated by the last thing said in it, and chats an earlier restart re-dated go back to where they belong.
+- A chat leaves Live Now as soon as its answer ends, instead of three minutes later, and a restart no longer shows every chat it closed as live.
+
 ## 0.6.0 — 2026-09-23
 
 - Updates are followed step by step — download, build, waiting for idle, restart — and every update reports how it ended and which version it landed on.

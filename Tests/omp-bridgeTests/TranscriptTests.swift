@@ -169,18 +169,14 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         let app = App(config: config)
         let adopted = await app.adopt(file: path, ompID: "sess-dates")
         #expect(abs(await adopted.createdDate().timeIntervalSince(updated)) < 1)
-        let adoptedUpdated = await adopted.updatedDate()
-        #expect(abs(adoptedUpdated.timeIntervalSince(updated)) < 1
-            || abs(adoptedUpdated.timeIntervalSince(Date())) < 3600)
+        #expect(abs(await adopted.updatedDate().timeIntervalSince(updated)) < 1)
 
         let restored = OmpSession(
             id: "restored-1", title: "Restored", directory: dir, model: "", effort: "medium",
             ompSessionFile: path, config: config, hub: Hub(), quietRegistry: QuietRegistry(),
             journal: nil, restoredDates: (created, updated))
         await restored.adoptExternally(loaded: TranscriptLoader.load(sessionFile: path), ompID: "sess-dates")
-        let restoredUpdated = await restored.updatedDate()
-        #expect(abs(restoredUpdated.timeIntervalSince(updated)) < 1
-            || abs(restoredUpdated.timeIntervalSince(Date())) < 3600)
+        #expect(abs(await restored.updatedDate().timeIntervalSince(updated)) < 1)
         try? FileManager.default.removeItem(atPath: path)
     }
 

@@ -183,9 +183,10 @@ enum TranscriptSearch {
             }
         }
         guard !matches.isEmpty || total > 0 else { return nil }
+        let said = TranscriptClock.read(tail: data, isWholeFile: true)?.lastSaid
         return SearchHit(
             sessionID: file.id, title: title ?? "", directory: directory,
-            updatedAt: file.modifiedAt, matches: matches, total: total)
+            updatedAt: said ?? file.modifiedAt, matches: matches, total: total)
     }
 
     private struct Passage {

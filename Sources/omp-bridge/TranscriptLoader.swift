@@ -4,7 +4,12 @@ struct LoadedTranscript {
     var sessionID: String?
     var cwd: String?
     var title: String?
+    /// When the conversation last moved: its newest said row, else the moment the session began.
     var updatedAt: Date?
+    var activity = TranscriptActivity()
+    /// The file's date as it stood before it was read, so a reader can tell whether anything has
+    /// been written since.
+    var modifiedAt: Date?
     var firstUserText: String?
     var messages: [Message] = []
     var model: String?
@@ -30,8 +35,11 @@ enum TranscriptLoader {
 
     static func load(sessionFile: String) -> LoadedTranscript {
         var result = LoadedTranscript()
+        let modified = mtime(sessionFile)
         guard let raw = FileManager.default.contents(atPath: sessionFile) else { return result }
-        result.updatedAt = mtime(sessionFile)
+        result.modifiedAt = modified
+        result.activity = TranscriptClock.read(tail: raw, isWholeFile: true) ?? TranscriptActivity()
+        var began: Date?
         struct OpenCall {
             let id: String
             let name: String
@@ -45,11 +53,7 @@ enum TranscriptLoader {
             case "session":
                 result.sessionID = value["id"]?.stringValue
                 result.cwd = value["cwd"]?.stringValue
-                if let ts = value["timestamp"]?.stringValue, let parsed = isoDate(ts),
-                    result.updatedAt == nil || parsed > (result.updatedAt ?? .distantPast)
-                {
-                    result.updatedAt = parsed
-                }
+                began = value["timestamp"]?.stringValue.flatMap(isoDate)
             case "model_change":
                 if let model = value["model"]?.stringValue { result.model = model }
             case "thinking_level_change":
@@ -145,6 +149,7 @@ enum TranscriptLoader {
                 break
             }
         }
+        result.updatedAt = result.activity.lastSaid ?? began ?? modified
         return result
     }
 
