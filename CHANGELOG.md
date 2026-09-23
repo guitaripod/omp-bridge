@@ -4,7 +4,7 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
-## Unreleased
+## 0.6.0 — 2026-09-23
 
 - Updates are followed step by step — download, build, waiting for idle, restart — and every update reports how it ended and which version it landed on.
 - The app shows what is new in an update, read from this changelog.
