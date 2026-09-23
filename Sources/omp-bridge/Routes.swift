@@ -206,8 +206,9 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     // MARK: update
 
     router.get("update") { request, _ in
-        let checkOnly = request.uri.queryParameters.get("check") == "false"
-        return jsonResponse(await app.updateStatus(refreshing: !checkOnly))
+        let check = request.uri.queryParameters.get("check")
+        return jsonResponse(
+            await app.updateStatus(refreshing: check != "false", fetchingNow: check == "now"))
     }
 
     router.post("update") { _, _ in

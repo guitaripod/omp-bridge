@@ -46,6 +46,13 @@ enum OmpVersion {
     }
 
     static let running: Stamp? = {
+        guard let stamp = onDisk() else { return nil }
+        return describesThisBinary(stamp) ? stamp : nil
+    }()
+
+    /// The stamp as the installer last wrote it — which, between a build and a restart, describes
+    /// the binary waiting on disk rather than the one running.
+    static func onDisk() -> Stamp? {
         let environment = ProcessInfo.processInfo.environment
         let directory =
             environment["OMP_STATE_DIR"]
@@ -54,11 +61,10 @@ enum OmpVersion {
             }
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".omp-bridge").path
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: "\(directory)/build.json")),
-            let stamp = try? JSONCoding.decoder.decode(Stamp.self, from: data)
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: "\(directory)/build.json"))
         else { return nil }
-        return describesThisBinary(stamp) ? stamp : nil
-    }()
+        return try? JSONCoding.decoder.decode(Stamp.self, from: data)
+    }
 
     private static func describesThisBinary(_ stamp: Stamp) -> Bool {
         let executable = Bundle.main.executableURL?.resolvingSymlinksInPath()
@@ -287,6 +293,11 @@ struct UpdateStatus: Codable, Sendable {
     var canRestart = false
     var automation: UpdateAutomation?
     var toolchain: String?
+    /// The job in flight, or the last one to end, with how it ended.
+    var job: UpdateJob?
+    /// What the newer build carries, in words a person reads. Only on an answer that consulted
+    /// the project.
+    var release: UpdateRelease?
 }
 
 struct UpdateState: Codable, Sendable {
@@ -294,6 +305,8 @@ struct UpdateState: Codable, Sendable {
     var startedAt: Date?
     var finishedAt: Date?
     var pid: Int32?
+    /// The phase a failure happened in, written by the installer beside `failed`.
+    var failedIn: String?
 }
 
 struct UpdatePolicy: Codable, Sendable {
@@ -338,7 +351,12 @@ actor UpdateService {
     private let stateURL: URL
     private let logURL: URL
     private let policyURL: URL
+    private let jobURL: URL
     private var policy: UpdatePolicy
+    /// The job in flight, or the last one to end. Written through on every change, because the
+    /// process that finishes it is not the one that started it.
+    private var job: UpdateJob?
+    private var releaseCache: (key: String, release: UpdateRelease)?
     private var lastFetch: Date?
     private var cachedRemote: RemoteState?
     private var waitingSince: Date?
@@ -352,6 +370,7 @@ actor UpdateService {
         let commit: String
         let describe: String?
         let changes: [String]
+        let release: UpdateRelease
         let behind: Int
         let ahead: Int
         let aheadSubjects: [String]
@@ -368,12 +387,16 @@ actor UpdateService {
         stateURL = stateDirectory.appendingPathComponent("update.state.json")
         logURL = stateDirectory.appendingPathComponent("update.log")
         policyURL = stateDirectory.appendingPathComponent("update.policy.json")
+        jobURL = stateDirectory.appendingPathComponent("update.job.json")
         try? FileManager.default.createDirectory(
             at: stateDirectory, withIntermediateDirectories: true)
         policy =
             (try? Data(contentsOf: policyURL)).flatMap {
                 try? JSONCoding.decoder.decode(UpdatePolicy.self, from: $0)
             } ?? UpdatePolicy()
+        job = (try? Data(contentsOf: jobURL)).flatMap {
+            try? JSONCoding.decoder.decode(UpdateJob.self, from: $0)
+        }
     }
 
     func attach(
@@ -384,11 +407,16 @@ actor UpdateService {
         self.settle = settle
     }
 
-    func status(refreshing: Bool = true) async -> UpdateStatus {
+    /// - Parameter fetchingNow: somebody pressed Check now, so the project is asked again rather
+    ///   than answered from a fetch made inside the last few minutes.
+    func status(refreshing: Bool = true, fetchingNow: Bool = false) async -> UpdateStatus {
+        if fetchingNow { lastFetch = nil }
         var status = await read(refreshing: refreshing)
         status.automation = automation(
             manager: status.manager, blocked: status.canUpdate ? nil : status.reason,
             owed: status.restartRequired && !status.canRestart)
+        if status.phase == "failed", job?.isFinished == false { failJob(nil) }
+        status.job = job
         return status
     }
 
@@ -468,6 +496,7 @@ actor UpdateService {
         status.latestCommit = remote.commit
         status.latestVersion = remote.describe
         status.changes = remote.changes
+        status.release = remote.release
         status.behind = remote.behind
         status.ahead = remote.ahead
         status.updateAvailable = remote.behind > 0
@@ -543,7 +572,7 @@ actor UpdateService {
         return "idle"
     }
 
-    func start() async -> (accepted: Bool, status: UpdateStatus) {
+    func start(automatic: Bool = false) async -> (accepted: Bool, status: UpdateStatus) {
         var current = await status(refreshing: false)
         guard current.canUpdate else { return (false, current) }
         guard !installerAlive(), current.phase != "restarting", current.phase != "waiting" else {
@@ -554,7 +583,10 @@ actor UpdateService {
             return (false, current)
         }
         try? Data().write(to: logURL, options: .atomic)
-        write(UpdateState(phase: "running", startedAt: Date(), finishedAt: nil, pid: nil))
+        begin(.update, automatic: automatic, target: cachedRemote?.describe)
+        write(
+            UpdateState(phase: "running", startedAt: Date(), finishedAt: nil, pid: nil),
+            inheritingInstaller: false)
         detach(script: script, source: source)
         watch()
         lastFetch = nil
@@ -574,6 +606,8 @@ actor UpdateService {
             return (false, current)
         }
         guard barrier == nil else { return (true, current) }
+        guard job?.isFinished != false else { return (false, current) }
+        begin(.restart, automatic: false, target: OmpVersion.onDisk()?.version)
         beginRestart()
         return (true, await status(refreshing: false))
     }
@@ -595,19 +629,34 @@ actor UpdateService {
     }
 
     func resume() {
-        guard let state = readState() else { return }
-        switch state.phase {
+        let state = readState()
+        switch state?.phase {
         case "restarting", "waiting":
             policy.noteSuccess(target: OmpVersion.running?.commit)
             writePolicy()
             write(
                 UpdateState(
-                    phase: "succeeded", startedAt: state.startedAt, finishedAt: Date(), pid: nil))
+                    phase: "succeeded", startedAt: state?.startedAt, finishedAt: Date(), pid: nil))
+            concludeJob()
         case "running", "building":
             watch()
+        case "failed":
+            failJob(InstallerLog.failure(in: logTail(lines: 40, characters: 6000)))
         default:
-            break
+            concludeJob()
         }
+    }
+
+    /// The job that was in flight when the last process stopped, judged by the process that came
+    /// back: did it come back on the build the job made.
+    private func concludeJob() {
+        guard var current = job, !current.isFinished else { return }
+        let (outcome, reason) = UpdateJob.conclusion(
+            of: current, runningBuiltAt: OmpVersion.running?.builtAt ?? Self.executableModified(),
+            processStarted: Self.processStarted, restartStillOwed: restartOwed())
+        current.finish(outcome, reason: reason, landed: runningVersion())
+        job = current
+        writeJob()
     }
 
     private func watch() {
@@ -616,12 +665,14 @@ actor UpdateService {
             while true {
                 try? await Task.sleep(for: .seconds(2))
                 let phase = await self.phaseOnDisk()
+                await self.follow(installerPhase: phase)
                 if phase == "restarting" {
                     await self.beginRestart()
                     return
                 }
                 if phase == "failed" {
                     await self.noteFailedAttempt()
+                    await self.failJob(nil)
                     return
                 }
                 if phase == "succeeded" || phase == nil { return }
@@ -639,6 +690,84 @@ actor UpdateService {
 
     private func phaseOnDisk() -> String? { readState()?.phase }
 
+    /// The job's step, moved to wherever the installer says the build has got to.
+    ///
+    /// Once the download is done the checkout sits on exactly what is being built, so the job's
+    /// target is read from it then: the version a client last saw offered can be a push behind the
+    /// one the installer's own fetch found.
+    private func follow(installerPhase phase: String?) {
+        guard let phase, let step = UpdateJob.Step(installerPhase: phase),
+            step != .waitForIdle, step != .restart, var current = job, !current.isFinished
+        else { return }
+        let before = current.step
+        current.advance(to: step)
+        guard current.step != before else { return }
+        if before == .download, current.kind == .update, let source {
+            current.target = OmpVersion.describe(source: source)
+        }
+        job = current
+        writeJob()
+    }
+
+    /// Starts a job, replacing whatever finished one was on record.
+    private func begin(_ kind: UpdateJob.Kind, automatic: Bool, target: String?) {
+        job = UpdateJob.begin(kind, automatic: automatic, from: runningVersion(), target: target)
+        writeJob()
+    }
+
+    /// Ends the job as failed, on the step the installer says it failed in — a refusal in the first
+    /// second of a build is the build's, whatever step the last poll happened to see.
+    private func failJob(_ reason: String?) {
+        guard var current = job, !current.isFinished else { return }
+        if let failedIn = readState()?.failedIn, let step = UpdateJob.Step(installerPhase: failedIn) {
+            if current.step == .download, step != .download, let source {
+                current.target = OmpVersion.describe(source: source)
+            }
+            current.advance(to: step)
+        }
+        let named =
+            reason ?? InstallerLog.failure(in: logTail(lines: 40, characters: 6000))
+            ?? "The update stopped without saying why — the log on that machine has the rest."
+        current.finish(.failed, reason: named, landed: runningVersion())
+        job = current
+        writeJob()
+    }
+
+    private func deferJob(_ reason: String) {
+        guard var current = job, !current.isFinished else { return }
+        current.finish(.deferred, reason: reason, landed: runningVersion())
+        job = current
+        writeJob()
+    }
+
+    private func advanceJob(to step: UpdateJob.Step) {
+        guard var current = job, !current.isFinished else { return }
+        current.advance(to: step)
+        job = current
+        writeJob()
+    }
+
+    /// What this process is running, as the job records it at either end.
+    private func runningVersion() -> String? {
+        OmpVersion.running?.version ?? source.map { OmpVersion.describe(source: $0) }
+    }
+
+    private func writeJob() {
+        guard let job, let data = try? JSONCoding.encoder.encode(job) else { return }
+        try? data.write(to: jobURL, options: .atomic)
+    }
+
+    /// When the file this process is running was last written.
+    static func executableModified() -> Date? {
+        guard let path = Bundle.main.executableURL?.resolvingSymlinksInPath().path,
+            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        else { return nil }
+        return attributes[.modificationDate] as? Date
+    }
+
+    /// Close enough to when this process began: the actor is built while the server is coming up.
+    static let processStarted = Date()
+
     private func restartOwed() -> Bool { restartRequired(source: source) }
 
     private func markFailed() {
@@ -646,6 +775,9 @@ actor UpdateService {
             UpdateState(
                 phase: "failed", startedAt: readState()?.startedAt, finishedAt: Date(), pid: nil))
         noteFailedAttempt()
+        failJob(
+            InstallerLog.failure(in: logTail(lines: 40, characters: 6000))
+                ?? "The installer stopped before it finished, without saying why.")
     }
 
     private func noteFailedAttempt() {
@@ -661,8 +793,12 @@ actor UpdateService {
                 UpdateState(
                     phase: "succeeded", startedAt: readState()?.startedAt, finishedAt: Date(),
                     pid: nil))
+            deferJob(
+                "Built. Nothing on that machine would start the bridge again, so it keeps running "
+                    + "the old build until somebody starts it there.")
             return
         }
+        advanceJob(to: .waitForIdle)
         waitingSince = Date()
         write(
             UpdateState(
@@ -694,9 +830,13 @@ actor UpdateService {
         write(
             UpdateState(
                 phase: "succeeded", startedAt: readState()?.startedAt, finishedAt: Date(), pid: nil))
+        deferJob(
+            "Built, but the machine was never idle long enough to restart. The new build loads the "
+                + "next time the bridge restarts.")
     }
 
     private func finishAndExit() async {
+        advanceJob(to: .restart)
         write(
             UpdateState(
                 phase: "restarting", startedAt: readState()?.startedAt, finishedAt: Date(),
@@ -725,13 +865,16 @@ actor UpdateService {
         else { return }
         let current = await status(refreshing: true)
         if current.restartRequired, current.canRestart {
+            if job?.isFinished != false {
+                begin(.restart, automatic: true, target: OmpVersion.onDisk()?.version)
+            }
             beginRestart()
             return
         }
         guard current.canUpdate, current.updateAvailable, current.remote?.ok == true,
             let target = current.latestCommit, policy.allows(target: target)
         else { return }
-        _ = await start()
+        _ = await start(automatic: true)
     }
 
     private func stagedScript(source: String) -> String? {
@@ -801,11 +944,40 @@ actor UpdateService {
         let describe = Shell.run("git", ["describe", "--tags", "--always", head], cwd: source)
             .trimmedOrNil()
         let state = RemoteState(
-            commit: String(head.prefix(7)), describe: describe, changes: changes, behind: behind,
+            commit: String(head.prefix(7)), describe: describe, changes: changes,
+            release: release(source: source, head: head, changes: changes), behind: behind,
             ahead: ahead, aheadSubjects: mine, ref: upstream, at: Date(),
             fetchFailed: lastRemoteError)
         cachedRemote = state
         return state
+    }
+
+    /// What the project's head would bring, in the changelog's own words: the releases newer than
+    /// what this process runs, and the headlines of anything past the newest tag. Read once per
+    /// head — the answer only changes when the head does or this process is replaced.
+    private func release(source: String, head: String, changes: [String]) -> UpdateRelease {
+        let running = runningVersion()
+        let key = "\(head)|\(running ?? "-")"
+        if let releaseCache, releaseCache.key == key { return releaseCache.release }
+        let tag = Shell.run("git", ["describe", "--tags", "--abbrev=0", head], cwd: source)
+            .trimmedOrNil()
+        let past = tag.flatMap {
+            Int(
+                Shell.run("git", ["rev-list", "--count", "\($0)..\(head)"], cwd: source)
+                    .trimmedOrNil() ?? "")
+        }
+        let untagged =
+            (past ?? 0) > 0 && tag != nil
+            ? Shell.run(
+                "git", ["log", "--pretty=format:%s", "-20", "\(tag!)..\(head)", "^HEAD"],
+                cwd: source
+            ).split(separator: "\n").map(String.init) : []
+        let changelog = Shell.run("git", ["show", "\(head):CHANGELOG.md"], cwd: source)
+        let release = UpdateRelease.assemble(
+            changelog: changelog, running: running, tag: tag, commitsPastTag: past,
+            untaggedSubjects: untagged, newSubjects: changes)
+        releaseCache = (key, release)
+        return release
     }
 
     private func remoteRef(_ source: String) -> String? {
@@ -867,9 +1039,13 @@ actor UpdateService {
         return try? JSONCoding.decoder.decode(UpdateState.self, from: data)
     }
 
-    private func write(_ state: UpdateState) {
+    /// A phase written from here keeps the installer's pid while the installer could still be
+    /// running — but a new job inherits nothing: the pid on disk after a failed build is that
+    /// build's installer, dead, and carried into the next job it would have that job judged failed
+    /// before its own installer had written a line.
+    private func write(_ state: UpdateState, inheritingInstaller: Bool = true) {
         var state = state
-        if state.pid == nil, Self.installing.contains(state.phase) {
+        if inheritingInstaller, state.pid == nil, Self.installing.contains(state.phase) {
             state.pid = readState()?.pid
         }
         guard let data = try? JSONCoding.encoder.encode(state) else { return }

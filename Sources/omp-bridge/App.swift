@@ -435,8 +435,8 @@ actor App {
         await hub.detach(id)
     }
 
-    func updateStatus(refreshing: Bool) async -> UpdateStatus {
-        await updateService.status(refreshing: refreshing)
+    func updateStatus(refreshing: Bool, fetchingNow: Bool = false) async -> UpdateStatus {
+        await updateService.status(refreshing: refreshing, fetchingNow: fetchingNow)
     }
 
     func startUpdate() async -> (accepted: Bool, status: UpdateStatus) {

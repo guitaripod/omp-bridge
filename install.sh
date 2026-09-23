@@ -34,10 +34,17 @@ say() {
   fi
 }
 
+# A failure records the phase it happened in, so the step a client shows as the one that broke is
+# the step that broke — a check that refuses in the first second of a build would otherwise be
+# blamed on the download the bridge last saw.
+CURRENT_PHASE=""
 phase() {
   [ "$MODE" = "update" ] || return 0
-  printf '{"phase":"%s","startedAt":"%s","pid":%s%s}\n' "$1" "${STARTED_AT:-$(now)}" "$$" \
-    "$( [ -n "${2:-}" ] && printf ',"finishedAt":"%s"' "$2" )" >"$STATE_FILE"
+  [ "$1" = failed ] || CURRENT_PHASE="$1"
+  printf '{"phase":"%s","startedAt":"%s","pid":%s%s%s}\n' "$1" "${STARTED_AT:-$(now)}" "$$" \
+    "$( [ -n "${2:-}" ] && printf ',"finishedAt":"%s"' "$2" )" \
+    "$( [ "$1" = failed ] && [ -n "$CURRENT_PHASE" ] && printf ',"failedIn":"%s"' "$CURRENT_PHASE" )" \
+    >"$STATE_FILE"
 }
 
 fail() {
