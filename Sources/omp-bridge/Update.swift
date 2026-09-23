@@ -765,7 +765,7 @@ actor UpdateService {
         return attributes[.modificationDate] as? Date
     }
 
-    /// Close enough to when this process began: the actor is built while the server is coming up.
+    /// When this process began. `main` reads it at launch; a static is only set when first read.
     static let processStarted = Date()
 
     private func restartOwed() -> Bool { restartRequired(source: source) }

@@ -29,6 +29,14 @@ if !FileManager.default.isExecutableFile(atPath: config.ompBin) {
     exit(1)
 }
 
+/// Read at launch, before anything can rewrite what they describe. A static is set the first time
+/// something reads it: the stamp read after an update had built would name a binary nobody has
+/// started yet as the one running, and a start time taken at the first update check put a build
+/// that landed a minute later level with the process — either way the bridge believed it already
+/// ran the build waiting on its disk, and refused the restart it owed.
+_ = OmpVersion.running
+_ = UpdateService.processStarted
+
 let app = App(config: config)
 await app.prepare()
 

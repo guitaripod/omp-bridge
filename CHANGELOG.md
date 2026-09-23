@@ -4,6 +4,11 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.6.2 — 2026-09-24
+
+- Pressing Restart on a bridge with a newer build waiting no longer gets refused, and the bridge no longer reports a build it hasn't started as the one running.
+- A restart takes seconds rather than a minute and a half: helper processes that ignore the stop signal are ended after 15 seconds instead of 90. Existing installs pick this up the next time the installer writes the service.
+
 ## 0.6.1 — 2026-09-23
 
 - Restarting or updating the bridge no longer moves every chat to the top of the list: a chat is dated by the last thing said in it, and chats an earlier restart re-dated go back to where they belong.
