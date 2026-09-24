@@ -13,10 +13,11 @@ conversation, and exposes them as plain HTTP + Server-Sent Events.
 | --- | --- |
 | Handshake | `GET /health`, `GET /status` (`agent: "omp"`, `proto: 2`) |
 | Streaming | `GET /stream` (sequenced, replayable, epoch-cursored), `GET /sessions/:id/events` |
-| Sessions | `GET/POST /sessions`, `GET/PATCH/DELETE /sessions/:id`, `/message`, `/abort`, `/clear`, `/fork` |
-| Interruptions | `GET /sessions/:id/interruption`, `/resume`, `/interruption/dismiss` |
+| Sessions | `GET/POST /sessions`, `GET/PATCH/DELETE /sessions/:id`, `/revision`, `/message`, `/abort`, `/clear`, `/fork` |
+| Interruptions | `GET /sessions/:id/interruption`, `/resume`, `/interruption/dismiss`, `/auto-resume` |
 | Subagents | `GET /sessions/:id/agents[/:agentID]` |
 | Money | `GET /sessions/:id/usage`, `GET /sessions/:id/spend`, `GET /analytics?days=N` |
+| Models | `GET /models` (omp's own catalog: provider, thinking levels, context window; cached 5 min) |
 | Search | `GET /search?q=&limit=` over every omp transcript on the machine |
 | Commands | `GET /commands?session=` (live slash-command catalog from omp), `GET /commands[?directory=]` (the machine's catalog with no chat open — a scratch omp asked in that directory, cached 5 min) |
 | Files | `GET /files`, `/files/content`, `/files/raw`, `GET /attachments/:session/:name` |
@@ -75,6 +76,7 @@ username is convention (`omp`) and any value is accepted.
 | `OMP_SRC` | auto-detected checkout | source the self-update rebuilds |
 | `OMP_MODEL` | omp's default | default model for new sessions |
 | `OMP_EFFORT` | `medium` | default effort/thinking level |
+| `OMP_TITLE_MODEL` | the session's model | model that writes a conversation's title |
 
 ## Self-update
 
