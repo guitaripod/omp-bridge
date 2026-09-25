@@ -4,6 +4,11 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.6.3 — 2026-09-25
+
+- The bridge no longer restarts itself every two minutes when its checkout carries a commit that was never built. A restart is offered only when a newer build is waiting on disk, so pressing Restart loads it and the offer goes away, instead of coming back on the same build still asking to be restarted.
+- A client that drops its live connection no longer leaves the bridge holding and feeding a dead subscriber for the rest of its life.
+
 ## 0.6.2 — 2026-09-24
 
 - Pressing Restart on a bridge with a newer build waiting no longer gets refused, and the bridge no longer reports a build it hasn't started as the one running.

@@ -87,6 +87,22 @@ private func fileResponse(
     return Response(status: .ok, headers: headers, body: stream)
 }
 
+/// Runs an SSE body and lets go of its hub subscriber however the body ends. A write to a client
+/// that has gone away throws, and a subscriber left registered past that point was never let go
+/// of: it stayed in the hub for the life of the process, buffering every frame published after it,
+/// and every publish went on yielding to it.
+private func detachingAfter(
+    _ id: UUID, from app: App, _ body: () async throws -> Void
+) async throws {
+    do {
+        try await body()
+    } catch {
+        await app.detachHub(id: id)
+        throw error
+    }
+    await app.detachHub(id: id)
+}
+
 private func decodeBody<T: Decodable>(
     _ type: T.Type, _ request: Request, limit: Int = 1 << 20
 ) async throws -> T {
@@ -152,20 +168,21 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
                 }
             }
 
-            let hello = StreamHello(
-                proto: 2, epoch: epoch, seq: attachment.headSeq, oldestSeq: oldest,
-                heartbeat: 10, reset: attachment.tooOld)
-            try await writeFrame(seq: attachment.headSeq, event: "hello", json: encode(hello))
-            for frame in attachment.replay { try await writeHub(frame) }
+            try await detachingAfter(attachment.id, from: app) {
+                let hello = StreamHello(
+                    proto: 2, epoch: epoch, seq: attachment.headSeq, oldestSeq: oldest,
+                    heartbeat: 10, reset: attachment.tooOld)
+                try await writeFrame(seq: attachment.headSeq, event: "hello", json: encode(hello))
+                for frame in attachment.replay { try await writeHub(frame) }
 
-            try await withGracefulShutdownHandler {
-                for await frame in attachment.stream {
-                    try await writeHub(frame)
+                try await withGracefulShutdownHandler {
+                    for await frame in attachment.stream {
+                        try await writeHub(frame)
+                    }
+                } onGracefulShutdown: {
+                    Task { await app.detachHub(id: attachment.id) }
                 }
-            } onGracefulShutdown: {
-                Task { await app.detachHub(id: attachment.id) }
             }
-            await app.detachHub(id: attachment.id)
             try await writer.finish(nil)
         }
         var headers = HTTPFields()
@@ -595,24 +612,26 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
                     buffer.writeString("\n\n")
                     try await writer.write(buffer)
                 }
-                try await write(.status(running ? "running" : "idle"))
-                for frame in attachment.replay {
-                    if case .session(let frameID, let event) = frame.event, frameID == id {
-                        try await write(event)
-                    }
-                }
-                try await withGracefulShutdownHandler {
-                    for await frame in attachment.stream {
+                try await detachingAfter(attachment.id, from: app) {
+                    try await write(.status(running ? "running" : "idle"))
+                    for frame in attachment.replay {
                         if case .session(let frameID, let event) = frame.event, frameID == id {
                             try await write(event)
-                        } else if case .heartbeat = frame.event {
-                            var buffer = ByteBuffer()
-                            buffer.writeString(": hb\n\n")
-                            try await writer.write(buffer)
                         }
                     }
-                } onGracefulShutdown: {
-                    Task { await app.detachHub(id: attachment.id) }
+                    try await withGracefulShutdownHandler {
+                        for await frame in attachment.stream {
+                            if case .session(let frameID, let event) = frame.event, frameID == id {
+                                try await write(event)
+                            } else if case .heartbeat = frame.event {
+                                var buffer = ByteBuffer()
+                                buffer.writeString(": hb\n\n")
+                                try await writer.write(buffer)
+                            }
+                        }
+                    } onGracefulShutdown: {
+                        Task { await app.detachHub(id: attachment.id) }
+                    }
                 }
                 try await writer.finish(nil)
             }

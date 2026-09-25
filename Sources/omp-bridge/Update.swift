@@ -426,7 +426,7 @@ actor UpdateService {
         let checkout = OmpVersion.describe(source: source)
         let manager = Self.serviceManager()
         let busy = await quiet?() ?? .unknown
-        let owed = restartRequired(source: source)
+        let owed = restartOwed()
         var status = UpdateStatus(
             version: checkout,
             running: OmpVersion.running?.version,
@@ -768,7 +768,14 @@ actor UpdateService {
     /// When this process began. `main` reads it at launch; a static is only set when first read.
     static let processStarted = Date()
 
-    private func restartOwed() -> Bool { restartRequired(source: source) }
+    /// A restart is owed only when a build newer than this process is waiting on disk. A commit
+    /// nobody has built yet is an update: comparing the checkout's head against the running build
+    /// owed a restart for a docs commit, and the restart came back on the same binary still owing
+    /// it, so the automation took the bridge down every two minutes.
+    private func restartOwed() -> Bool {
+        guard let built = Self.executableModified() else { return false }
+        return built > Self.processStarted.addingTimeInterval(OmpVersion.stampSlack)
+    }
 
     private func markFailed() {
         write(
@@ -1026,13 +1033,6 @@ actor UpdateService {
             items: (changed + untracked).map { String($0.dropFirst(3)) })
     }
 
-    private func restartRequired(source: String?) -> Bool {
-        guard let source, dirt(source) == nil else { return false }
-        guard let built = OmpVersion.running?.commit, !built.isEmpty,
-            let head = OmpVersion.commit(source: source)
-        else { return false }
-        return !built.hasPrefix(head) && !head.hasPrefix(built)
-    }
 
     private func readState() -> UpdateState? {
         guard let data = try? Data(contentsOf: stateURL) else { return nil }
