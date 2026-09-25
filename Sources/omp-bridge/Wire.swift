@@ -380,6 +380,9 @@ struct BridgeStatus: Encodable {
     var authenticated: Bool
     var proto: Int
     var epoch: String
+    /// The protocol version of `GET /sessions/:id/wait`, so a client can tell "route missing (too
+    /// old)" from "unknown session" without probing it blind.
+    var turnWait: Int
 }
 
 struct AgentCommandDTO: Codable, Sendable {

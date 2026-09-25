@@ -9,7 +9,7 @@ private func makeSession(
     let config = Config(
         port: 0, bind: "127.0.0.1", password: "x", workdir: directory,
         ompBin: "/nonexistent/omp", storePath: directory + "/sessions.json",
-        stateDir: directory, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil)
+        stateDir: directory, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil, waitMax: 10800)
     return OmpSession(
         title: "Test", directory: directory, model: "", effort: "medium",
         ompSessionFile: file, config: config, hub: Hub(), quietRegistry: QuietRegistry())
@@ -143,7 +143,7 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         let config = Config(
             port: 0, bind: "127.0.0.1", password: "x", workdir: dir,
             ompBin: "/nonexistent/omp", storePath: dir + "/sessions.json",
-            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil)
+            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil, waitMax: 10800)
         let app = App(config: config)
         let session = await app.adopt(file: path, ompID: "sess-live")
         #expect(await session.snapshotMessages().count == 2)
@@ -165,7 +165,7 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         let config = Config(
             port: 0, bind: "127.0.0.1", password: "x", workdir: dir,
             ompBin: "/nonexistent/omp", storePath: dir + "/sessions.json",
-            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil)
+            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil, waitMax: 10800)
         let app = App(config: config)
         let adopted = await app.adopt(file: path, ompID: "sess-dates")
         #expect(abs(await adopted.createdDate().timeIntervalSince(updated)) < 1)

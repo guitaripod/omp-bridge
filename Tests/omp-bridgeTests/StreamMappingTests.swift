@@ -9,7 +9,7 @@ import Testing
         let config = Config(
             port: 0, bind: "", password: "", workdir: dir, ompBin: "/bin/false",
             storePath: dir + "/sessions.json",
-            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil)
+            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil, waitMax: 10800)
         let session = OmpSession(
             title: "Test", directory: dir, model: "", effort: "medium",
             config: config, hub: hub, quietRegistry: QuietRegistry())

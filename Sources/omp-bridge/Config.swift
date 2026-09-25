@@ -14,6 +14,9 @@ struct Config: Sendable {
     /// The engine that writes session titles. Unset means the session's own model, which is the
     /// one already loaded on this machine and so the cheapest thing to ask.
     let titleModel: String?
+    /// How long `GET /sessions/:id/wait` may hold one request before it gives up and answers
+    /// `state: "running"` — "still going, ask again" rather than holding a connection forever.
+    let waitMax: TimeInterval
 
     static func load() -> Config {
         let env = ProcessInfo.processInfo.environment
@@ -41,7 +44,8 @@ struct Config: Sendable {
             srcPath: src.isEmpty ? nil : src,
             defaultModel: env["OMP_MODEL"].flatMap { $0.isEmpty ? nil : $0 },
             defaultEffort: env["OMP_EFFORT"] ?? "medium",
-            titleModel: env["OMP_TITLE_MODEL"].flatMap { $0.isEmpty ? nil : $0 }
+            titleModel: env["OMP_TITLE_MODEL"].flatMap { $0.isEmpty ? nil : $0 },
+            waitMax: TimeInterval(Int(env["OMP_WAIT_MAX"] ?? "") ?? 10800)
         )
     }
 

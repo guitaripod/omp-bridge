@@ -87,7 +87,7 @@ private func config(in dir: String) -> Config {
     Config(
         port: 0, bind: "127.0.0.1", password: "x", workdir: dir,
         ompBin: "/nonexistent/omp", storePath: dir + "/sessions.json",
-        stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil)
+        stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil, waitMax: 10800)
 }
 
 private func session(for path: String, restored: (Date, Date)? = nil, forkedAt: Date? = nil) -> OmpSession {

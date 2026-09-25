@@ -98,6 +98,20 @@ actor OmpSession {
     private var pendingUI: PendingUI?
     private var subagents: [String: SubagentState] = [:]
     private var knownCommands: [AgentCommandDTO] = []
+    /// What the last turn left behind, for a caller that shows up after it is already over —
+    /// `GET /sessions/:id/wait` reads this the moment it finds nothing running. Cleared by
+    /// nothing: it simply stands until the next turn overwrites it, which is exactly what a late
+    /// caller wants to hear.
+    private(set) var lastTurnOutcome: TurnOutcome?
+
+    /// How a turn came to stop, which decides what ``TurnWait`` calls it. A cause the engine
+    /// itself narrated (`agentEnd`) still has to read `turnHadContent`/`turnLastErrorMessage` to
+    /// tell finished from answerless from failed; the other two are never ambiguous.
+    private enum TurnEndCause {
+        case agentEnd
+        case processFailure
+        case aborted
+    }
 
     struct PendingUI: Sendable {
         let requestID: String
@@ -109,6 +123,19 @@ actor OmpSession {
         let questionJSON: String
         let askedAt: Date
     }
+
+    /// What `GET /sessions/:id/wait` needs of an outstanding ask: just enough to point a client at
+    /// the row carrying it, never the question's own text — the transcript already has that.
+    struct PendingQuestion: Sendable, Equatable {
+        var messageID: String?
+    }
+
+    func pendingQuestion() -> PendingQuestion? {
+        guard pendingUI != nil else { return nil }
+        return PendingQuestion(messageID: liveMessageID)
+    }
+
+    func lastOutcomeSnapshot() -> TurnOutcome? { lastTurnOutcome }
 
     var summary: SessionSummary {
         SessionSummary(
@@ -442,7 +469,7 @@ actor OmpSession {
         else { return }
         guard await process.isRunning else {
             await publish(.error("The oh-my-pi process exited before the turn ended."))
-            finishTurn()
+            finishTurn(cause: .processFailure)
             return
         }
         let state = await process.request("get_state", timeout: 10)
@@ -467,7 +494,7 @@ actor OmpSession {
         guard let process, await process.isRunning else {
             healStrikes = 0
             await publish(.error("The oh-my-pi process exited before the turn ended."))
-            finishTurn()
+            finishTurn(cause: .processFailure)
             return
         }
         let state = await process.request("get_state", timeout: 10)
@@ -532,7 +559,7 @@ actor OmpSession {
         guard running, let process else { return false }
         _ = await process.request("abort")
         queued.removeAll()
-        finishTurn()
+        finishTurn(cause: .aborted)
         return true
     }
 
@@ -648,7 +675,7 @@ actor OmpSession {
         }
     }
 
-    private func finishTurn() {
+    private func finishTurn(cause: TurnEndCause = .agentEnd) {
         guard running else { return }
         running = false
         settleOwnTurn()
@@ -663,6 +690,7 @@ actor OmpSession {
         }
         totalCostUSD += turnCost
         totalTokens = totalTokens + turnTokens
+        recordTurnOutcome(cause: cause, unfinished: unfinished)
         turnStartedAt = nil
         settleUnansweredAsk()
         let settled = settleDanglingTools()
@@ -676,6 +704,34 @@ actor OmpSession {
             await journal?.clear(id)
             await quietRegistry.decrement()
             await drainQueue()
+        }
+    }
+
+    /// What a waiting client is told once this turn is over. Recorded here because nothing later
+    /// remembers it: ``turnStartedAt`` and the turn counters below are cleared for the next turn
+    /// the moment this call returns.
+    private func recordTurnOutcome(cause: TurnEndCause, unfinished: Message?) {
+        let duration = turnStartedAt.map { Date().timeIntervalSince($0) }
+        lastTurnOutcome = TurnOutcome(
+            ending: Self.turnEnding(
+                cause: cause, turnHadContent: turnHadContent,
+                hasError: turnLastErrorMessage != nil),
+            toolCount: turnStartedAt != nil ? max(turnCalls, 1) : nil,
+            duration: duration, lastMessageID: unfinished?.id ?? messages.last?.id,
+            endedAt: Date())
+    }
+
+    /// omp never says why a turn stopped beyond what it hands the engine's own frames — a cause
+    /// this bridge caused itself (``aborted``) or observed itself (``processFailure``) is never
+    /// ambiguous, but an ordinary `agent_end` still has to be read against whether anything was
+    /// said and whether the last message carried an error.
+    private static func turnEnding(cause: TurnEndCause, turnHadContent: Bool, hasError: Bool)
+        -> TurnWait.Ending
+    {
+        switch cause {
+        case .aborted: return .cancelled
+        case .processFailure: return .failed
+        case .agentEnd: return hasError ? .failed : (turnHadContent ? .finished : .answerless)
         }
     }
 
@@ -875,7 +931,7 @@ actor OmpSession {
             }
             if running {
                 await publish(.error("The oh-my-pi process exited before the turn ended."))
-                finishTurn()
+                finishTurn(cause: .processFailure)
             }
         case "agent_start":
             running = true
@@ -1505,6 +1561,16 @@ extension OmpSession {
 
     func settleOwnTurn() {
         ownTurnSettledAt = Date()
+    }
+
+    /// Told once by the app's own recovery pass, for a turn whose journal entry outlived the
+    /// process that opened it: the bridge itself restarted or crashed mid-turn, so nothing here
+    /// ever ran ``finishTurn(cause:)`` for it and the ending has to be written directly from what
+    /// the journal and the recovered transcript still know.
+    func markInterrupted(toolCount: Int, endedAt: Date) {
+        lastTurnOutcome = TurnOutcome(
+            ending: .interrupted, toolCount: toolCount > 0 ? toolCount : nil,
+            duration: nil, lastMessageID: messages.last?.id, endedAt: endedAt)
     }
 
     func sessionFile() -> String? { ompSessionFile }

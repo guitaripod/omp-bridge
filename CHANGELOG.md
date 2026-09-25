@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.7.0 — 2026-09-25
+
+- `GET /sessions/:id/wait` holds a connection open until a turn ends or asks the person something, instead of a client having to poll — the same shape as claude-bridge's, so a phone that has closed can wake on either engine. `GET /status` reports `turnWait: 1` so a client can tell an older bridge apart from a session it cannot find.
+
 ## 0.6.3 — 2026-09-25
 
 - The bridge no longer restarts itself every two minutes when its checkout carries a commit that was never built. A restart is offered only when a newer build is waiting on disk, so pressing Restart loads it and the offer goes away, instead of coming back on the same build still asking to be restarted.

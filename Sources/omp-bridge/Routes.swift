@@ -503,6 +503,18 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         } catch { return sessionError(error) }
     }
 
+    router.get("sessions/:id/wait") { _, context in
+        do {
+            let session = try await resolveSession(context)
+            let body = ResponseBody { writer in
+                try await TurnWaitEngine.run(session: session, maxWait: config.waitMax, writer: &writer)
+            }
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            return Response(status: .ok, headers: headers, body: body)
+        } catch { return sessionError(error) }
+    }
+
     router.get("sessions/:id/usage") { _, context in
         do {
             let session = try await resolveSession(context)

@@ -13,7 +13,7 @@ conversation, and exposes them as plain HTTP + Server-Sent Events.
 | --- | --- |
 | Handshake | `GET /health`, `GET /status` (`agent: "omp"`, `proto: 2`) |
 | Streaming | `GET /stream` (sequenced, replayable, epoch-cursored), `GET /sessions/:id/events` |
-| Sessions | `GET/POST /sessions`, `GET/PATCH/DELETE /sessions/:id`, `/revision`, `/message`, `/abort`, `/clear`, `/fork` |
+| Sessions | `GET/POST /sessions`, `GET/PATCH/DELETE /sessions/:id`, `/revision`, `/wait`, `/message`, `/abort`, `/clear`, `/fork` |
 | Interruptions | `GET /sessions/:id/interruption`, `/resume`, `/interruption/dismiss`, `/auto-resume` |
 | Subagents | `GET /sessions/:id/agents[/:agentID]` |
 | Money | `GET /sessions/:id/usage`, `GET /sessions/:id/spend`, `GET /analytics?days=N` |
@@ -77,6 +77,37 @@ username is convention (`omp`) and any value is accepted.
 | `OMP_MODEL` | omp's default | default model for new sessions |
 | `OMP_EFFORT` | `medium` | default effort/thinking level |
 | `OMP_TITLE_MODEL` | the session's model | model that writes a conversation's title |
+| `OMP_WAIT_MAX` | `10800` (3h) | seconds `GET /sessions/:id/wait` holds before answering `running` |
+
+## Waiting on a turn
+
+`GET /sessions/:id/wait` is a long poll with no cursor: it answers once, when there is
+something worth telling a client that stopped watching — never a stream of updates. A client
+that already knows what it is waiting for (a background URLSession, a client that was closed)
+hands over the session id and gets back exactly one JSON object, whenever it is ready.
+
+The response is `200`, chunked, with no content-length: a single `\n` leaves with the headers
+so nothing reads the connection as dead on the first byte, then another `\n` every 10 seconds
+while it holds. The body itself is a JSON object, and leading whitespace before a JSON value is
+valid (RFC 8259), so a client decodes the whole response in one pass rather than looking for a
+delimiter.
+
+It resolves the moment the session has nothing left to wait for: the turn ended (`state:
+"ended"`, with the ending it actually had — `finished`, `answerless`, `failed`, `cancelled` or
+`interrupted`, read from what omp itself recorded, never guessed), or the turn is waiting on the
+person (`state: "needsYou"`, `ending: "question"` — omp has no separate approval step). If
+nothing was ever open when the request arrived, it answers at once with `waited: false` and the
+last turn's ending, if one is known. A session a terminal is running rather than the bridge
+(`externallyLive`) is watched on the same short poll the bridge already uses to keep that flag
+current, so waiting on one blocks exactly as long as `/revision` would say it should.
+
+A hold that outlasts `OMP_WAIT_MAX` answers `state: "running"` — still going, ask again — rather
+than holding the connection forever. A client that disconnects ends its own hold; the bridge
+notices on the next write and drops the loop. Two clients waiting on the same session at once is
+ordinary, and each gets its own answer the moment the session settles.
+
+`GET /status` carries `turnWait: 1`, the protocol version of this route, so a client can tell
+"too old to have this" from "session not found" without probing blind.
 
 ## Self-update
 

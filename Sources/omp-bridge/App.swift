@@ -374,10 +374,17 @@ actor App {
                 detectedAt: Date(), ompSessionFile: entry.ompSessionFile, progress: progress,
                 queued: [], resumedAt: nil)
             interruptedBySession[entry.sessionID] = interruption
-            if let owner = sessions[entry.sessionID] {
-                await owner.settleOwnTurn()
+            let owner: OmpSession?
+            if let existing = sessions[entry.sessionID] {
+                owner = existing
             } else if let file = entry.ompSessionFile, FileManager.default.fileExists(atPath: file) {
-                await adopt(file: file, ompID: nil).settleOwnTurn()
+                owner = await adopt(file: file, ompID: nil)
+            } else {
+                owner = nil
+            }
+            if let owner {
+                await owner.settleOwnTurn()
+                await owner.markInterrupted(toolCount: progress.toolCount, endedAt: interruption.detectedAt)
             }
             await journal.clear(entry.sessionID)
             await hub.publish(.session(id: entry.sessionID, event: .interrupted(interruption)))
@@ -419,7 +426,7 @@ actor App {
         BridgeStatus(
             agent: "omp", model: config.defaultModel ?? "", version: version,
             authenticated: await authFlow.isAuthenticatedCached(), proto: 2,
-            epoch: hub.epoch)
+            epoch: hub.epoch, turnWait: 1)
     }
 
     func hubEpoch() -> String { hub.epoch }
