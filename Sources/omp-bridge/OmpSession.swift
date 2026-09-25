@@ -716,7 +716,7 @@ actor OmpSession {
             ending: Self.turnEnding(
                 cause: cause, turnHadContent: turnHadContent,
                 hasError: turnLastErrorMessage != nil),
-            toolCount: turnStartedAt != nil ? max(turnCalls, 1) : nil,
+            toolCount: turnStartedAt != nil ? turnCalls : nil,
             duration: duration, lastMessageID: unfinished?.id ?? messages.last?.id,
             endedAt: Date())
     }

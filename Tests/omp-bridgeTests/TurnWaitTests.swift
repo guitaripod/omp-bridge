@@ -91,7 +91,26 @@ private struct CollectingWriter: ResponseBodyWriter {
         #expect(wait.state == .ended)
         #expect(wait.waited == true)
         #expect(wait.ending == .finished)
+        #expect(wait.toolCount == 0)
         #expect(!(await session.isRunningValue()))
+    }
+
+    @Test func toolFreeTurnReportsZeroNotOne() async throws {
+        let session = makeSession()
+        await session.handleOmpEvent(.object(["type": .string("agent_start")]))
+        await session.handleOmpEvent(.object(["type": .string("agent_end")]))
+        let wait = await TurnWaitEngine.resolved(for: session, waited: false)
+        #expect(wait?.toolCount == 0)
+    }
+
+    @Test func turnWithCallsReportsItsRealCount() async throws {
+        let session = makeSession()
+        await session.handleOmpEvent(.object(["type": .string("agent_start")]))
+        await session.handleOmpEvent(.object(["type": .string("turn_start")]))
+        await session.handleOmpEvent(.object(["type": .string("turn_start")]))
+        await session.handleOmpEvent(.object(["type": .string("agent_end")]))
+        let wait = await TurnWaitEngine.resolved(for: session, waited: false)
+        #expect(wait?.toolCount == 2)
     }
 
     @Test func pendingQuestionResolvesNeedsYou() async throws {
