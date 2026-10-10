@@ -430,10 +430,14 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     }
 
     router.patch("sessions/:id") { request, context in
+        let id = context.parameters.get("id") ?? ""
+        guard let body = try? await decodeBody(SessionPatch.self, request), !body.isEmpty
+        else { return errorResponse("bad request", status: .badRequest) }
+        await app.applyMarks(id: id, change: body.marks)
+        guard let title = body.cleanTitle else { return jsonResponse(["ok": true]) }
         do {
             let session = try await resolveSession(context)
-            let body = try await decodeBody(RenameRequest.self, request)
-            await session.rename(body.title)
+            await session.rename(title)
             return jsonResponse(["ok": true])
         } catch { return sessionError(error) }
     }

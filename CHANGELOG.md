@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.8.0 — 2026-10-10
+
+- The bridge now keeps what a person decides about each conversation — saved, pinned, archived and when it was last read — so every device reads the same answer from the machine that holds the chat. `PATCH /sessions/:id` takes `saved`, `pinned`, `archived` and `read` (`seen` or `unread`), each stamped with when the person decided so a phone that was offline cannot overrule a later choice, and every conversation in a listing or a live `list.upsert` carries them. `/status` reports `marks` so a client can tell a bridge that holds them from one that does not. Same contract as claude-bridge's.
+
 ## 0.7.0 — 2026-09-25
 
 - `GET /sessions/:id/wait` holds a connection open until a turn ends or asks the person something, instead of a client having to poll — the same shape as claude-bridge's, so a phone that has closed can wake on either engine. `GET /status` reports `turnWait: 1` so a client can tell an older bridge apart from a session it cannot find.

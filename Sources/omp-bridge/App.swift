@@ -24,6 +24,10 @@ actor App {
     private var sessions: [String: OmpSession] = [:]
     private let journal: TurnJournal
     private var lastSummaries: [String: SessionSummary] = [:]
+    private var sweeps = 0
+    /// Sweeps run once a second, so this is hourly: how often forgotten conversations' marks are
+    /// pruned and the sightings that kept the others alive are written down.
+    private static let marksPruneInterval = 3600
     private var version = "unknown"
     private var interruptedBySession: [String: Interruption] = [:]
     private var ownedTranscriptsBySession: [String: Set<String>] = [:]
@@ -170,6 +174,13 @@ actor App {
         return session
     }
 
+    /// Records a person's decision about a conversation, dated against the conversation's last
+    /// movement as this bridge last listed it. The change reaches connected clients as the
+    /// ordinary list upsert the next sweep finds, not through a publish of its own.
+    func applyMarks(id: String, change: MarkChange) async {
+        await store.applyMarks(id, change, updatedAt: lastSummaries[id]?.updatedAt)
+    }
+
     func deleteSession(id: String) async {
         if let session = sessions.removeValue(forKey: id) {
             await session.shutdown()
@@ -178,6 +189,7 @@ actor App {
         } else {
             _ = await store.remove(id)
         }
+        await store.forgetMarks(id)
         lastSummaries.removeValue(forKey: id)
         lastStoredAt.removeValue(forKey: id)
         await hub.publish(.listRemove(id: id))
@@ -226,7 +238,8 @@ actor App {
                 model: item.model ?? "", effort: item.effort ?? "",
                 createdAt: item.createdAt, updatedAt: item.updatedAt)
         }
-        return byID
+        let stamped = await store.stampingMarks(Array(byID.values))
+        return Dictionary(uniqueKeysWithValues: stamped.map { ($0.id, $0) })
     }
 
     private func claimedFiles() async -> Set<String> {
@@ -257,6 +270,10 @@ actor App {
             await hub.publish(.listRemove(id: id))
         }
         lastSummaries = current
+        sweeps += 1
+        if sweeps % Self.marksPruneInterval == 0 {
+            await store.pruneMarks(listed: Set(current.keys))
+        }
         for (_, session) in sessions {
             await session.healIfStale()
             await session.refreshFromTranscriptIfIdle()
@@ -426,7 +443,7 @@ actor App {
         BridgeStatus(
             agent: "omp", model: config.defaultModel ?? "", version: version,
             authenticated: await authFlow.isAuthenticatedCached(), proto: 2,
-            epoch: hub.epoch, turnWait: 1)
+            epoch: hub.epoch, turnWait: 1, marks: 1)
     }
 
     func hubEpoch() -> String { hub.epoch }

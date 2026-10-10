@@ -33,11 +33,14 @@ actor SessionStore {
     private let path: String
     private var records: [String: SessionRecord] = [:]
     private var hidden: [String] = []
+    private var marks: MarksLedger
+    private var marksDirty = false
     private var persistTask: Task<Void, Never>?
 
     init(path: String) {
         self.path = path
         let dir = (path as NSString).deletingLastPathComponent
+        self.marks = MarksLedger.load(from: Self.marksURL(besides: path))
         if let data = FileManager.default.contents(atPath: path),
             let decoded = try? WireCoding.decoder.decode([SessionRecord].self, from: data)
         {
@@ -76,6 +79,49 @@ actor SessionStore {
         let record = records.removeValue(forKey: id)
         if record != nil { persistNow() }
         return record
+    }
+
+    /// Records what a person decided about a conversation. Kept beside the records rather than
+    /// inside one so a transcript the bridge has only discovered can be marked without being
+    /// adopted into a store that would then own its title.
+    @discardableResult
+    func applyMarks(_ id: String, _ change: MarkChange, updatedAt: Date?, now: Date = Date())
+        -> Bool
+    {
+        guard marks.apply(change, to: id, updatedAt: updatedAt, now: now) else { return false }
+        persistMarks()
+        return true
+    }
+
+    /// The same rows, each carrying what the person decided about it. Applied to the whole
+    /// listing rather than to the sessions alone, because part of a listing is transcripts the
+    /// store has never adopted.
+    func stampingMarks(_ summaries: [SessionSummary], now: Date = Date()) -> [SessionSummary] {
+        if marks.noteListed(summaries.map(\.id), now: now) { marksDirty = true }
+        return summaries.map { marks.stamping($0) }
+    }
+
+    /// Forgets the marks of conversations nothing has listed for a month, and writes down the
+    /// sightings that kept the others alive.
+    func pruneMarks(listed: Set<String>, now: Date = Date()) {
+        let dropped = marks.prune(listed: listed, now: now)
+        if dropped || marksDirty { persistMarks() }
+    }
+
+    /// A deleted conversation takes its marks with it.
+    func forgetMarks(_ id: String) {
+        guard marks.remove(id) else { return }
+        persistMarks()
+    }
+
+    private static func marksURL(besides path: String) -> URL {
+        URL(fileURLWithPath: (path as NSString).deletingLastPathComponent)
+            .appendingPathComponent("marks.json")
+    }
+
+    private func persistMarks() {
+        marksDirty = false
+        marks.write(to: Self.marksURL(besides: path))
     }
 
     func isHidden(_ ompSessionID: String) -> Bool { hidden.contains(ompSessionID) }

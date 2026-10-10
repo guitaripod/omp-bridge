@@ -109,6 +109,20 @@ ordinary, and each gets its own answer the moment the session settles.
 `GET /status` carries `turnWait: 1`, the protocol version of this route, so a client can tell
 "too old to have this" from "session not found" without probing blind.
 
+## Session marks
+
+What a person decides about a conversation lives here, beside the transcripts, so every client
+reads one answer. Same contract as claude-bridge's: `PATCH /sessions/:id` takes
+`{title?, saved?, pinned?, archived?, read?: "seen"|"unread", at?}`, where `at` is when the person
+decided and each mark keeps the later decision rather than the later arrival. Marks are accepted
+for any id, including a transcript the bridge has only discovered; a title still needs a session.
+Every summary — `GET /sessions` rows and `list.upsert` frames — carries `saved`, `pinned` and
+`archived` (false included), `pinnedAt` while pinned, and `readAt` once any client has marked the
+chat, in this bridge's clock so it compares with `updatedAt` (unread when `updatedAt` is more than
+a second past it). They persist in `marks.json` beside the store, are dropped with the
+conversation, and are forgotten for ids nothing has listed for thirty days. `GET /status` carries
+`marks: 1`.
+
 ## Self-update
 
 Same contract as claude-bridge: `version` (checkout) vs `running` (build stamp),

@@ -149,6 +149,18 @@ struct SessionSummary: Codable, Sendable, Equatable {
     var agents: Int?
     var agentTask: String?
     var resuming: Bool?
+    /// What the person decided about this conversation, stamped on by the bridge that holds it
+    /// (``SessionStore/stampingMarks(_:now:)``). `pinned` and `archived` are always said by a
+    /// bridge that speaks marks, false included: their presence is how a client tells *not
+    /// pinned* from *this bridge cannot say*.
+    var saved: Bool?
+    var pinned: Bool?
+    var pinnedAt: Date?
+    var archived: Bool?
+    /// When the person last looked at the conversation, in this bridge's clock so it compares
+    /// directly with `updatedAt`. A chat is unread when `updatedAt` is more than a second past it.
+    /// Absent until some client has marked the chat.
+    var readAt: Date?
 }
 
 struct SubagentSummary: Codable, Sendable, Equatable {
@@ -171,6 +183,33 @@ struct SubagentTranscript: Codable, Sendable {
 
 struct RenameRequest: Codable, Sendable {
     var title: String
+}
+
+/// What a client wants changed about a conversation. Every field is optional and a patch that
+/// names none of them is refused, so a client that sends only a bookmark cannot silently blank a
+/// title. `at` is when the person decided, on the client's clock: it orders marks, and alone it
+/// asks for nothing.
+struct SessionPatch: Codable, Sendable {
+    var title: String?
+    var saved: Bool?
+    var pinned: Bool?
+    var archived: Bool?
+    var read: ReadMark?
+    var at: Date?
+
+    var cleanTitle: String? {
+        guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty
+        else { return nil }
+        return title
+    }
+
+    var marks: MarkChange {
+        MarkChange(saved: saved, pinned: pinned, archived: archived, read: read, at: at)
+    }
+
+    var isEmpty: Bool {
+        cleanTitle == nil && saved == nil && pinned == nil && archived == nil && read == nil
+    }
 }
 
 struct UsageSummary: Codable, Sendable {
@@ -383,6 +422,9 @@ struct BridgeStatus: Encodable {
     /// The protocol version of `GET /sessions/:id/wait`, so a client can tell "route missing (too
     /// old)" from "unknown session" without probing it blind.
     var turnWait: Int
+    /// The protocol version of the per-conversation marks — saved, pinned, archived, last look —
+    /// so a client can tell a bridge that holds them from one that cannot without a listing.
+    var marks: Int
 }
 
 struct AgentCommandDTO: Codable, Sendable {
