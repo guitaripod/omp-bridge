@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+jobs:
+  package-linux:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: swift:6.4.1-jammy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag is the version in CHANGELOG.md
+        run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' CHANGELOG.md | head -1)"
+      - run: scripts/package-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.platform }}
+          path: dist/*
+
+  package-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag is the version in CHANGELOG.md
+        run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' CHANGELOG.md | head -1)"
+      - run: scripts/package-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-darwin-arm64
+          path: dist/*
+
+  release:
+    needs: [package-linux, package-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Write the release notes and the version pointer install.sh reads
+        run: |
+          awk -v version="${GITHUB_REF_NAME#v}" '$1 == "##" && $2 == version { found = 1; next } found && $1 == "##" { exit } found' CHANGELOG.md > notes.md
+          printf '%s\n' "${GITHUB_REF_NAME#v}" > dist/latest.txt
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md

@@ -50,12 +50,33 @@ its own state directory. 404 means *this server cannot say*.
 ## Install
 
 ```sh
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/guitaripod/omp-bridge/master/install.sh | bash
 ```
 
-Builds from source, installs `~/.local/bin/omp-bridge`, stamps `~/.omp-bridge/build.json`
-and writes a systemd --user unit (Linux) or launchd plist (macOS). Config lives in
+Requirements: Linux (x86_64 or aarch64, glibc 2.35 or newer, which is every mainstream
+distribution since 2022) or macOS 14+ on Apple silicon, `curl`, and
+[oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`). **No Swift toolchain and no `git`**: the
+installer downloads a prebuilt program, checks its SHA-256 (integrity; the download itself is
+HTTPS from GitHub), installs `~/.local/bin/omp-bridge`, stamps `~/.omp-bridge/build.json` and
+writes a systemd --user unit (Linux) or launchd plist (macOS). Config lives in
 `~/.config/omp-bridge.env`.
+
+Before it installs anything it looks at the machine and says what it found, in plain words:
+
+- **Tailscale**: installed, signed in and connected? It is what lets a phone reach the machine
+  from anywhere. If it is missing or signed out the installer says exactly what to do and carries
+  on, because the bridge still works on that computer and on the home network.
+- **omp**: installed, and signed in to a model provider?
+
+It ends with a short list of what is still left to do, only the things that are actually left,
+and then the address and password to give a client.
+
+If there is no prebuilt program for the machine, the download fails, or the checksum does not
+match, the installer says why in one sentence and builds from source instead (clone into
+`~/.omp-bridge/src`, `swift build`; 5 to 15 minutes), and if Swift is missing then, says where to
+get it: <https://www.swift.org/install/>. `--from-source` asks for that build directly, and
+`--no-service` installs everything except the service. A machine that already has a source
+checkout keeps building from it. Re-running the installer updates in place and keeps the config.
 
 The bridge refuses to start without `OMP_PASSWORD`: omp runs tools with full permissions by
 default, so an unauthenticated bridge is arbitrary code execution for anyone who can reach
@@ -130,12 +151,17 @@ Same contract as claude-bridge: `version` (checkout) vs `running` (build stamp),
 so no running turn is ever torn down, `/update/restart` when a build landed without being
 loaded, and `/update/auto` policy with exponential backoff held by the server, not clients.
 
+A prebuilt install has no checkout, so it reports that it cannot update itself and is updated by
+re-running the installer.
+
 ## Development
 
 ```sh
 swift build
 swift test
-scripts/smoke.sh   # end-to-end against a real omp binary
+scripts/smoke.sh          # end-to-end against a real omp binary
+scripts/test-install.sh   # the installer, offline, against a fake release
+scripts/package-release.sh   # the release archive and checksum install.sh downloads
 ```
 
 Requires Swift 6 and an installed `omp`. Tests cover the pure layers: NDJSON line framing,

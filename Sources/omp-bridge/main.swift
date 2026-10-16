@@ -5,6 +5,17 @@ func env(_ key: String, _ fallback: String) -> String {
     ProcessInfo.processInfo.environment[key].flatMap { $0.isEmpty ? nil : $0 } ?? fallback
 }
 
+if OmpVersion.isVersionRequest(CommandLine.arguments) {
+    print(OmpVersion.versionLine())
+    exit(0)
+}
+
+if let unknown = OmpVersion.unknownCommand(CommandLine.arguments) {
+    FileHandle.standardError.write(
+        Data("omp-bridge: unknown command \"\(unknown)\". Started with no arguments it serves; --version prints the version.\n".utf8))
+    exit(2)
+}
+
 let config = Config.load()
 if config.password.isEmpty, FileManager.default.fileExists(atPath: config.ompBin) {
     let stderr = FileHandle.standardError

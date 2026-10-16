@@ -1,7 +1,20 @@
 import Foundation
 
 enum OmpVersion {
-    static let fallback = "0.1.0"
+    static let fallback = "0.8.0"
+
+    static func isVersionRequest(_ arguments: [String]) -> Bool {
+        arguments.dropFirst().first.map { $0 == "--version" || $0 == "version" } ?? false
+    }
+
+    static func versionLine() -> String { "omp-bridge \(fallback)" }
+
+    static func unknownCommand(_ arguments: [String]) -> String? {
+        guard let first = arguments.dropFirst().first, !isVersionRequest(arguments) else {
+            return nil
+        }
+        return first
+    }
 
     static func describe(source: String?) -> String {
         guard let source,

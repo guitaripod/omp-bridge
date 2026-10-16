@@ -4,3 +4,4 @@ Info.plist
 .build/
 DerivedData
 .swiftpm
+dist/
