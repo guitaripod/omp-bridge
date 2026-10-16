@@ -34,6 +34,10 @@ for the route table and mapping rules before touching anything.
   turn is recovered as an interruption, never lost.
 - `Update.swift` + `install.sh` + `Quiescence.swift` — self-update machinery, quiet barrier at
   exit.
+- `ReleaseInstall.swift` — how a prebuilt install (no checkout) finds a newer release, reads its
+  notes and runs the installer it kept; answers `/update` in the checkout path's exact shape.
+- `Pairing.swift` + `PairingCommand.swift` — `omp-bridge pair`: the link and QR the apps scan
+  (`PairingKit` from CodingAgentKit owns the format).
 - `TranscriptLoader.swift` / `Discovery.swift` / `TranscriptSearch.swift` — omp transcript
   format (`~/.omp/agent/sessions/<escaped-cwd>/*.jsonl`) is the source of truth for anything
   the bridge did not run itself.

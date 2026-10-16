@@ -54,7 +54,9 @@ struct Config: Sendable {
         var url = URL(fileURLWithPath: exe).resolvingSymlinksInPath()
         for _ in 0..<6 {
             url.deleteLastPathComponent()
-            if FileManager.default.fileExists(atPath: url.appendingPathComponent(".git").path) {
+            if FileManager.default.fileExists(atPath: url.appendingPathComponent(".git").path),
+                FileManager.default.fileExists(atPath: url.appendingPathComponent("Package.swift").path)
+            {
                 return url.path
             }
         }

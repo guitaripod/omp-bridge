@@ -10,7 +10,9 @@ enum OmpVersion {
     static func versionLine() -> String { "omp-bridge \(fallback)" }
 
     static func unknownCommand(_ arguments: [String]) -> String? {
-        guard let first = arguments.dropFirst().first, !isVersionRequest(arguments) else {
+        guard let first = arguments.dropFirst().first, !isVersionRequest(arguments),
+            first != "pair"
+        else {
             return nil
         }
         return first
@@ -74,7 +76,11 @@ enum OmpVersion {
             }
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".omp-bridge").path
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: "\(directory)/build.json"))
+        return onDisk(in: URL(fileURLWithPath: directory))
+    }
+
+    static func onDisk(in directory: URL) -> Stamp? {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("build.json"))
         else { return nil }
         return try? JSONCoding.decoder.decode(Stamp.self, from: data)
     }
@@ -320,6 +326,7 @@ struct UpdateState: Codable, Sendable {
     var pid: Int32?
     /// The phase a failure happened in, written by the installer beside `failed`.
     var failedIn: String?
+    var target: String?
 }
 
 struct UpdatePolicy: Codable, Sendable {
@@ -333,7 +340,9 @@ struct UpdatePolicy: Codable, Sendable {
     static let firstBackoff: TimeInterval = 3600
     static let maximumBackoff: TimeInterval = 24 * 3600
 
-    static func key(_ commit: String) -> String { String(commit.prefix(7)) }
+    static func key(_ commit: String) -> String {
+        commit.contains(".") ? commit : String(commit.prefix(7))
+    }
 
     mutating func noteFailure(target: String, now: Date = Date()) {
         let target = Self.key(target)
@@ -358,6 +367,17 @@ struct UpdatePolicy: Codable, Sendable {
     }
 }
 
+struct UpdateHooks: Sendable {
+    var manager: @Sendable () -> String
+    var stamp: @Sendable () -> OmpVersion.Stamp?
+    var terminate: @Sendable () -> Void
+    var home: String
+
+    static let live = UpdateHooks(
+        manager: { UpdateService.serviceManager() }, stamp: { OmpVersion.running },
+        terminate: { exit(0) }, home: FileManager.default.homeDirectoryForCurrentUser.path)
+}
+
 actor UpdateService {
     private let source: String?
     private let stateDirectory: URL
@@ -372,6 +392,10 @@ actor UpdateService {
     private var releaseCache: (key: String, release: UpdateRelease)?
     private var lastFetch: Date?
     private var cachedRemote: RemoteState?
+    private let hooks: UpdateHooks
+    private let releaseInstall: ReleaseInstall?
+    private var cachedRelease: ReleaseSnapshot?
+    private var lookNow = false
     private var waitingSince: Date?
     private var barrier: Task<Void, Never>?
     private var ticker: Task<Void, Never>?
@@ -394,8 +418,14 @@ actor UpdateService {
 
     private var lastRemoteError: String?
 
-    init(stateDirectory: URL, sourceOverride: String? = nil) {
-        source = sourceOverride ?? OmpVersion.sourceDirectory()
+    init(
+        stateDirectory: URL, sourceOverride: String? = nil, deriveSource: Bool = true,
+        hooks: UpdateHooks = .live
+    ) {
+        let chosen = sourceOverride ?? (deriveSource ? OmpVersion.sourceDirectory() : nil)
+        source = chosen
+        self.hooks = hooks
+        releaseInstall = chosen == nil ? ReleaseInstall.read(stateDirectory: stateDirectory) : nil
         self.stateDirectory = stateDirectory
         stateURL = stateDirectory.appendingPathComponent("update.state.json")
         logURL = stateDirectory.appendingPathComponent("update.log")
@@ -423,7 +453,10 @@ actor UpdateService {
     /// - Parameter fetchingNow: somebody pressed Check now, so the project is asked again rather
     ///   than answered from a fetch made inside the last few minutes.
     func status(refreshing: Bool = true, fetchingNow: Bool = false) async -> UpdateStatus {
-        if fetchingNow { lastFetch = nil }
+        if fetchingNow {
+            lastFetch = nil
+            lookNow = true
+        }
         var status = await read(refreshing: refreshing)
         status.automation = automation(
             manager: status.manager, blocked: status.canUpdate ? nil : status.reason,
@@ -437,14 +470,14 @@ actor UpdateService {
         let state = readState()
         let phase = settled(state)
         let checkout = OmpVersion.describe(source: source)
-        let manager = Self.serviceManager()
+        let manager = hooks.manager()
         let busy = await quiet?() ?? .unknown
         let owed = restartOwed()
         var status = UpdateStatus(
             version: checkout,
-            running: OmpVersion.running?.version,
+            running: hooks.stamp()?.version,
             restartRequired: owed,
-            builtAt: OmpVersion.running?.builtAt,
+            builtAt: hooks.stamp()?.builtAt,
             remote: RemoteCheck(checked: false, ok: false),
             commit: OmpVersion.commit(source: source),
             manager: manager,
@@ -457,6 +490,9 @@ actor UpdateService {
             waitingSince: waitingSince,
             canRestart: owed && manager != "manual")
         guard let source else {
+            if let releaseInstall {
+                return await readRelease(status, install: releaseInstall, refreshing: refreshing)
+            }
             status.reason =
                 "This bridge was not installed from a git checkout, so it cannot update itself."
             status.obstacle = UpdateObstacle(
@@ -528,6 +564,101 @@ actor UpdateService {
         return status
     }
 
+    private func readRelease(
+        _ base: UpdateStatus, install: ReleaseInstall, refreshing: Bool
+    ) async -> UpdateStatus {
+        var status = base
+        if let obstacle = releaseObstacle() {
+            status.reason = obstacle.summary
+            status.obstacle = obstacle
+        } else {
+            status.canUpdate = true
+            if status.manager == "manual" {
+                status.reason =
+                    "No service supervises this bridge, so it will install the new program but "
+                    + "you will have to start it again yourself."
+            }
+        }
+        guard refreshing else {
+            status.remote = RemoteCheck(
+                checked: false, ok: false, error: "This answer did not consult the project.")
+            return status
+        }
+        let feed = ReleaseFeed(install: install, stateDirectory: stateDirectory)
+        let force = lookNow
+        lookNow = false
+        let snapshot = await Task.detached { feed.look(force: force) }.value
+        cachedRelease = snapshot
+        return Self.applying(snapshot, to: status, running: runningVersion())
+    }
+
+    static func applying(
+        _ snapshot: ReleaseSnapshot, to base: UpdateStatus, running: String?
+    ) -> UpdateStatus {
+        var status = base
+        guard let latest = snapshot.latest else {
+            status.remote = RemoteCheck(
+                checked: true, ok: false, at: snapshot.checkedAt,
+                error: snapshot.failure ?? "The project could not be reached.")
+            return status
+        }
+        let installed = running.flatMap(ReleaseVersion.init)
+        let offered = ReleaseVersion(latest)
+        let behind = installed.flatMap { mine in offered.map { mine.isOlder(than: $0) } } ?? false
+        let release = UpdateRelease.assemble(
+            changelog: snapshot.changelog, running: running, tag: latest, commitsPastTag: 0,
+            untaggedSubjects: [], newSubjects: [])
+        status.latestVersion = latest
+        status.release = release
+        status.changes = Array(release.notes.flatMap(\.items).prefix(20))
+        status.updateAvailable = behind
+        status.remote = RemoteCheck(
+            checked: true, ok: snapshot.failure == nil && installed != nil, at: snapshot.checkedAt,
+            error: snapshot.failure
+                ?? (installed == nil
+                    ? "This build is stamped \(running ?? "unknown"), which cannot be ranked "
+                        + "against release \(latest)."
+                    : nil),
+            ref: "releases/latest")
+        return status
+    }
+
+    private func releaseObstacle() -> UpdateObstacle? {
+        switch KeptInstaller(stateDirectory: stateDirectory).verdict() {
+        case .missing:
+            return UpdateObstacle(
+                kind: "noInstaller",
+                summary:
+                    "The installer that came with this program is not on that machine, so it "
+                    + "cannot update itself. Run the install command there once.")
+        case .changed:
+            return UpdateObstacle(
+                kind: "installerChanged",
+                summary:
+                    "The installer kept on that machine no longer matches its checksum, so it "
+                    + "will not be run. Run the install command there once.")
+        case .verified:
+            break
+        }
+        if Shell.which("curl") == nil {
+            return UpdateObstacle(
+                kind: "noCurl", summary: "curl is needed to download an update, and it is not on that machine's PATH.")
+        }
+        if ReleaseInstall.platform == nil {
+            return UpdateObstacle(
+                kind: "noPrebuilt", summary: "There is no prebuilt program for that kind of machine.")
+        }
+        return nil
+    }
+
+    private func landedTarget(running: Bool) -> String? {
+        if releaseInstall != nil {
+            return running
+                ? hooks.stamp()?.version : OmpVersion.onDisk(in: stateDirectory)?.version
+        }
+        return running ? hooks.stamp()?.commit : OmpVersion.commit(source: source)
+    }
+
     private func automation(manager: String, blocked: String?, owed: Bool) -> UpdateAutomation {
         UpdateAutomation(
             enabled: policy.enabled, lastTakenAt: policy.lastTakenAt,
@@ -579,7 +710,7 @@ actor UpdateService {
     }
 
     private func terminal(_ state: UpdateState) -> String {
-        guard state.phase == "failed", let built = OmpVersion.running?.builtAt,
+        guard state.phase == "failed", let built = hooks.stamp()?.builtAt,
             let finished = state.finishedAt, finished < built
         else { return state.phase }
         return "idle"
@@ -591,12 +722,22 @@ actor UpdateService {
         guard !installerAlive(), current.phase != "restarting", current.phase != "waiting" else {
             return (false, current)
         }
-        guard let source, let script = stagedScript(source: source) else {
-            current.reason = "install.sh is missing from the checkout, so there is nothing to run."
-            return (false, current)
+        let script: String?
+        if let source {
+            script = stagedScript(source: source)
+            if script == nil {
+                current.reason = "install.sh is missing from the checkout, so there is nothing to run."
+            }
+        } else {
+            script = KeptInstaller(stateDirectory: stateDirectory).stage(
+                into: stateDirectory.appendingPathComponent("staging"))
+            if script == nil {
+                current.reason = "The installer kept on that machine is missing or has been changed, so there is nothing safe to run."
+            }
         }
+        guard let script else { return (false, current) }
         try? Data().write(to: logURL, options: .atomic)
-        begin(.update, automatic: automatic, target: cachedRemote?.describe)
+        begin(.update, automatic: automatic, target: cachedRemote?.describe ?? cachedRelease?.latest)
         write(
             UpdateState(phase: "running", startedAt: Date(), finishedAt: nil, pid: nil),
             inheritingInstaller: false)
@@ -608,7 +749,7 @@ actor UpdateService {
 
     func restart() async -> (accepted: Bool, status: UpdateStatus) {
         var current = await status(refreshing: false)
-        guard Self.serviceManager() != "manual" else {
+        guard hooks.manager() != "manual" else {
             current.reason =
                 "Nothing supervises this bridge, so it would not come back. Start it on that "
                 + "machine instead."
@@ -631,13 +772,16 @@ actor UpdateService {
         return await status(refreshing: true)
     }
 
-    private func detach(script: String, source: String) {
-        var environment = [
-            "OMP_SRC": source,
-            "OMP_STATE_DIR": stateDirectory.path,
-        ]
-        environment["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
-        if let toolchain = OmpToolchain.resolve() { environment["OMP_SWIFT"] = toolchain }
+    private func detach(script: String, source: String?) {
+        var environment = ["OMP_STATE_DIR": stateDirectory.path]
+        if let source { environment["OMP_SRC"] = source }
+        if source == nil, let releaseInstall {
+            environment["OMP_RELEASE_BASE"] = releaseInstall.base.absoluteString
+        }
+        environment["HOME"] = hooks.home
+        if source != nil, let toolchain = OmpToolchain.resolve() {
+            environment["OMP_SWIFT"] = toolchain
+        }
         Shell.spawn("/bin/bash", [script, "--update", "--managed"], environment: environment)
     }
 
@@ -645,7 +789,7 @@ actor UpdateService {
         let state = readState()
         switch state?.phase {
         case "restarting", "waiting":
-            policy.noteSuccess(target: OmpVersion.running?.commit)
+            policy.noteSuccess(target: landedTarget(running: true))
             writePolicy()
             write(
                 UpdateState(
@@ -665,7 +809,7 @@ actor UpdateService {
     private func concludeJob() {
         guard var current = job, !current.isFinished else { return }
         let (outcome, reason) = UpdateJob.conclusion(
-            of: current, runningBuiltAt: OmpVersion.running?.builtAt ?? Self.executableModified(),
+            of: current, runningBuiltAt: hooks.stamp()?.builtAt ?? Self.executableModified(),
             processStarted: Self.processStarted, restartStillOwed: restartOwed())
         current.finish(outcome, reason: reason, landed: runningVersion())
         job = current
@@ -715,8 +859,12 @@ actor UpdateService {
         let before = current.step
         current.advance(to: step)
         guard current.step != before else { return }
-        if before == .download, current.kind == .update, let source {
-            current.target = OmpVersion.describe(source: source)
+        if before == .download, current.kind == .update {
+            if let source {
+                current.target = OmpVersion.describe(source: source)
+            } else if let target = readState()?.target {
+                current.target = target
+            }
         }
         job = current
         writeJob()
@@ -762,7 +910,8 @@ actor UpdateService {
 
     /// What this process is running, as the job records it at either end.
     private func runningVersion() -> String? {
-        OmpVersion.running?.version ?? source.map { OmpVersion.describe(source: $0) }
+        hooks.stamp()?.version ?? source.map { OmpVersion.describe(source: $0) }
+            ?? (releaseInstall == nil ? nil : OmpVersion.fallback)
     }
 
     private func writeJob() {
@@ -801,14 +950,15 @@ actor UpdateService {
     }
 
     private func noteFailedAttempt() {
-        let target = cachedRemote?.commit ?? remoteHead(source ?? "") ?? "unknown"
+        let target =
+            cachedRemote?.commit ?? cachedRelease?.latest ?? remoteHead(source ?? "") ?? "unknown"
         policy.noteFailure(target: UpdatePolicy.key(target))
         writePolicy()
     }
 
     private func beginRestart() {
         guard barrier == nil else { return }
-        guard Self.serviceManager() != "manual" else {
+        guard hooks.manager() != "manual" else {
             write(
                 UpdateState(
                     phase: "succeeded", startedAt: readState()?.startedAt, finishedAt: Date(),
@@ -861,11 +1011,11 @@ actor UpdateService {
             UpdateState(
                 phase: "restarting", startedAt: readState()?.startedAt, finishedAt: Date(),
                 pid: nil))
-        policy.noteSuccess(target: OmpVersion.commit(source: source))
+        policy.noteSuccess(target: landedTarget(running: false))
         writePolicy()
         await settle?()
         try? await Task.sleep(for: .milliseconds(300))
-        exit(0)
+        hooks.terminate()
     }
 
     func startAutomation() {
@@ -879,8 +1029,8 @@ actor UpdateService {
         }
     }
 
-    private func considerUpdating() async {
-        guard policy.enabled, Self.serviceManager() != "manual", !installerAlive(),
+    func considerUpdating() async {
+        guard policy.enabled, hooks.manager() != "manual", !installerAlive(),
             barrier == nil
         else { return }
         let current = await status(refreshing: true)
@@ -892,7 +1042,7 @@ actor UpdateService {
             return
         }
         guard current.canUpdate, current.updateAvailable, current.remote?.ok == true,
-            let target = current.latestCommit, policy.allows(target: target)
+            let target = current.latestCommit ?? current.latestVersion, policy.allows(target: target)
         else { return }
         _ = await start(automatic: true)
     }

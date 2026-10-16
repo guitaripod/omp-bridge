@@ -14,6 +14,10 @@
 # files, and is what the bridge runs when a client asks it to update itself. --no-service installs
 # everything except the service. A machine that already builds from source keeps doing so.
 #
+# A prebuilt install keeps the installer that arrived with it (state dir: install.sh, with its
+# checksum) and a record of where it came from (install.json), so the bridge can update itself
+# later without a checkout and without fetching a script.
+#
 # A client app that already minted a password can pass it through the pipe:
 #
 #   curl -fsSL https://raw.githubusercontent.com/guitaripod/omp-bridge/master/install.sh | OMP_REPO=https://github.com/guitaripod/omp-bridge OMP_PASSWORD=xxx bash
@@ -23,10 +27,9 @@ set -euo pipefail
 
 DEFAULT_REPO="https://github.com/guitaripod/omp-bridge"
 REPO="${OMP_REPO:-}"
-RELEASE_BASE="${OMP_RELEASE_BASE:-${REPO:-$DEFAULT_REPO}/releases/latest/download}"
-RELEASE_BASE="${RELEASE_BASE%/}"
 SRC="${OMP_SRC:-$HOME/.omp-bridge/src}"
 STATE_DIR="${OMP_STATE_DIR:-$HOME/.omp-bridge}"
+INSTALL_RECORD="$STATE_DIR/install.json"
 CONFIG="$HOME/.config/omp-bridge.env"
 BIN_DIR="$HOME/.local/bin"
 BIN="$BIN_DIR/omp-bridge"
@@ -54,6 +57,18 @@ mkdir -p "$STATE_DIR"
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# A string value from the install record, which this script writes on one line and the bridge reads.
+record_value() {
+  [ -f "$INSTALL_RECORD" ] || return 0
+  sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$INSTALL_RECORD" | head -1 || true
+}
+
+# Where releases are published: what the caller said, else what this machine was installed from, else
+# the project's own.
+RELEASE_BASE="${OMP_RELEASE_BASE:-$(record_value base)}"
+RELEASE_BASE="${RELEASE_BASE:-${REPO:-$DEFAULT_REPO}/releases/latest/download}"
+RELEASE_BASE="${RELEASE_BASE%/}"
+
 say() {
   if [ "$MODE" = "update" ]; then
     printf '%s\n' "$*" >>"$LOG"
@@ -73,12 +88,14 @@ say() {
 # A prebuilt install walks the same words: `running` is the download and its checks, `building` is
 # putting the verified program in place, `restarting` is the hand-over, exactly as for a build.
 CURRENT_PHASE=""
+VERSION=""
 phase() {
   [ "$MODE" = "update" ] || return 0
   [ "$1" = failed ] || CURRENT_PHASE="$1"
-  printf '{"phase":"%s","startedAt":"%s","pid":%s%s%s}\n' "$1" "${STARTED_AT:-$(now)}" "$$" \
+  printf '{"phase":"%s","startedAt":"%s","pid":%s%s%s%s}\n' "$1" "${STARTED_AT:-$(now)}" "$$" \
     "$( [ -n "${2:-}" ] && printf ',"finishedAt":"%s"' "$2" )" \
     "$( [ "$1" = failed ] && [ -n "$CURRENT_PHASE" ] && printf ',"failedIn":"%s"' "$CURRENT_PHASE" )" \
+    "$( [ -n "$VERSION" ] && printf ',"target":"%s"' "$VERSION" )" \
     >"$STATE_FILE"
 }
 
@@ -102,13 +119,20 @@ add_left() { LEFT_ITEMS="$LEFT_ITEMS$*"$'\n'; }
 # Runs a command and gives up on it after a number of seconds. Everything the installer asks of
 # another program (tailscale, the agent CLI, the freshly downloaded binary) must not be able to hold
 # the install hostage, and it still reads this shell's standard input. The kill cannot be argued
-# with, because a shell started with SIGTERM ignored passes that on to every child.
+# with, because a shell started with SIGTERM ignored passes that on to every child. The timer looks
+# once a second whether the command is still there, so it is gone within a second of the command
+# instead of outliving it by the whole timeout.
 bounded() {
   local seconds="$1" pid timer status=0
   shift
   "$@" <&0 &
   pid=$!
-  ( sleep "$seconds"; kill -KILL "$pid" ) >/dev/null 2>&1 &
+  ( elapsed=0
+    while [ "$elapsed" -lt "$seconds" ] && kill -0 "$pid" 2>/dev/null; do
+      sleep 1
+      elapsed=$(( elapsed + 1 ))
+    done
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" ) >/dev/null 2>&1 &
   timer=$!
   wait "$pid" 2>/dev/null || status=$?
   kill -KILL "$timer" >/dev/null 2>&1 || true
@@ -163,7 +187,6 @@ checksum() {
 # Downloads the latest release for this machine and proves it: the checksum matches and the program
 # starts here. Leaves the verified program in $WORK/omp-bridge and the version in $VERSION, or
 # the reason it could not in $FETCH_REASON.
-VERSION=""
 FETCH_REASON=""
 fetch_release() {
   local platform asset expected status=0
@@ -205,10 +228,11 @@ fetch_release() {
     return 1
   }
 
-  tar -xzf "$WORK/$asset" -C "$WORK" omp-bridge 2>>"$LOG" || {
-    FETCH_REASON="the download could not be unpacked"
-    return 1
-  }
+  tar -xzf "$WORK/$asset" -C "$WORK" omp-bridge install.sh 2>/dev/null ||
+    tar -xzf "$WORK/$asset" -C "$WORK" omp-bridge 2>>"$LOG" || {
+      FETCH_REASON="the download could not be unpacked"
+      return 1
+    }
   chmod 755 "$WORK/omp-bridge"
   [ "$(bounded 15 "$WORK/omp-bridge" --version </dev/null 2>/dev/null || true)" = "omp-bridge $VERSION" ] || {
     FETCH_REASON="the prebuilt program does not start on this machine"
@@ -223,10 +247,36 @@ fetch_release() {
 # arrived.
 install_release() {
   mkdir -p "$BIN_DIR"
+  keep_installer
   touch "$WORK/omp-bridge"
   mv -f "$WORK/omp-bridge" "$BIN_DIR/.omp-bridge.new"
   mv -f "$BIN_DIR/.omp-bridge.new" "$BIN"
   stamp_release
+  write_install_record release
+}
+
+# The installer that came in the archive is kept beside its checksum, verified by the archive's own
+# checksum when it arrived. A later update runs this copy, so updating needs no fetch of a script
+# and no script that was not checked; the bridge checks the copy against the checksum again before
+# every run. An archive without one leaves a machine that can be installed over by hand but not
+# updated from a phone, and the bridge says so.
+keep_installer() {
+  [ -s "$WORK/install.sh" ] || { say "this release carries no installer; updates from a phone will not work"; return 0; }
+  "${BASH:-bash}" -n "$WORK/install.sh" 2>>"$LOG" || fail "the installer in this release does not read as a script"
+  chmod 755 "$WORK/install.sh"
+  mv -f "$WORK/install.sh" "$STATE_DIR/.install.sh.new"
+  checksum "$STATE_DIR/.install.sh.new" >"$STATE_DIR/.install.sh.sha256.new"
+  mv -f "$STATE_DIR/.install.sh.new" "$STATE_DIR/install.sh"
+  mv -f "$STATE_DIR/.install.sh.sha256.new" "$STATE_DIR/install.sh.sha256"
+}
+
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# Which kind of install this is, in the file the bridge reads to know how to update itself.
+write_install_record() {
+  printf '{"mode":"%s","repo":"%s","base":"%s","installedAt":"%s"}\n' "$1" \
+    "$(json_escape "${REPO:-$DEFAULT_REPO}")" "$(json_escape "$RELEASE_BASE")" "$(now)" >"$INSTALL_RECORD.new"
+  mv -f "$INSTALL_RECORD.new" "$INSTALL_RECORD"
 }
 
 # What the program that was just installed is, in the file the bridge reads once at startup. A
@@ -316,6 +366,7 @@ build() {
   fi
   install_binary
   stamp_build
+  write_install_record source
 }
 
 install_binary() {
@@ -499,7 +550,7 @@ preflight_tailscale() {
   local output="" status=0
   if ! find_tailscale; then
     say "  Tailscale: not installed"
-    add_left "Install Tailscale on this computer and on your phone (https://tailscale.com/download) and sign in to both with the same account. Until then the bridge works on this computer and on your home network only."
+    add_left "Install Tailscale on this computer and on your phone (https://tailscale.com/download) and sign in to both with the same account. Until then the bridge works on this computer and on your home network only. Then run  @PAIR@  to show the code your phone scans."
     return 0
   fi
   output="$(bounded 10 "$TAILSCALE" status 2>&1 </dev/null)" || status=$?
@@ -510,13 +561,13 @@ preflight_tailscale() {
   case "$output" in
     *"Logged out"*|*"NeedsLogin"*|*"Log in at"*)
       say "  Tailscale: installed, but not signed in"
-      add_left "Sign in to Tailscale on this computer: run  sudo tailscale up  (or open the Tailscale app) and finish the sign-in. Until then the bridge works on this computer and on your home network only." ;;
+      add_left "Sign in to Tailscale on this computer: run  sudo tailscale up  (or open the Tailscale app) and finish the sign-in. Until then the bridge works on this computer and on your home network only. Then run  @PAIR@  to show the code your phone scans." ;;
     *"stopped"*)
       say "  Tailscale: installed, but turned off"
-      add_left "Turn Tailscale on: run  sudo tailscale up  (or switch it on in the Tailscale app). Until then the bridge works on this computer and on your home network only." ;;
+      add_left "Turn Tailscale on: run  sudo tailscale up  (or switch it on in the Tailscale app). Until then the bridge works on this computer and on your home network only. Then run  @PAIR@  to show the code your phone scans." ;;
     *)
       say "  Tailscale: installed, but not running"
-      add_left "Start Tailscale: open the Tailscale app, or on Linux run  sudo systemctl enable --now tailscaled  and then  sudo tailscale up. Until then the bridge works on this computer and on your home network only." ;;
+      add_left "Start Tailscale: open the Tailscale app, or on Linux run  sudo systemctl enable --now tailscaled  and then  sudo tailscale up. Until then the bridge works on this computer and on your home network only. Then run  @PAIR@  to show the code your phone scans." ;;
   esac
 }
 
@@ -582,7 +633,7 @@ print_left() {
   printf '\nWhat is left to do:\n'
   while IFS= read -r item; do
     [ -n "$item" ] || continue
-    printf '  %d. %s\n' "$number" "$item"
+    printf '  %d. %s\n' "$number" "${item//@PAIR@/$BIN pair}"
     number=$(( number + 1 ))
   done <<EOF
 $LEFT_ITEMS
@@ -611,7 +662,9 @@ Or check it by hand:
 EOF
 }
 
-# Runs the binary's own `pair` command, in the environment the service gives it.
+# Runs the binary's own `pair` command, in the environment the service gives it. The colour is
+# decided by whether this script is writing to a person's terminal, which the capture around this
+# call hides from the program.
 run_pair() {
   [ -x "$BIN" ] || return 1
   ( set -a
@@ -619,15 +672,16 @@ run_pair() {
     set +a
     export OMP_STATE_DIR="$STATE_DIR"
     [ "$DELIVERY" = "source" ] && export OMP_SRC="$SRC"
-    exec "$BIN" pair )
+    exec "$BIN" pair --color "$1" )
 }
 
 # The pairing link and code when the installed bridge can print them, and the address and password
 # the way this script always has when it cannot. `pair` is asked for rather than detected: a
 # program that does not know the word exits with a usage error and prints nothing.
 print_pairing() {
-  local output
-  if output="$(bounded 20 run_pair 2>/dev/null </dev/null)" && [ -n "$output" ]; then
+  local output color=never
+  [ -t 1 ] && color=always
+  if output="$(bounded 20 run_pair "$color" 2>/dev/null </dev/null)" && [ -n "$output" ]; then
     printf '\n%s\n' "$output"
   else
     print_address

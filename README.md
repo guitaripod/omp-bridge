@@ -68,8 +68,10 @@ Before it installs anything it looks at the machine and says what it found, in p
   on, because the bridge still works on that computer and on the home network.
 - **omp**: installed, and signed in to a model provider?
 
-It ends with a short list of what is still left to do, only the things that are actually left,
-and then the address and password to give a client.
+It ends with a short list of what is still left to do, only the things that are actually left
+(Tailscale on this computer and on the phone, signing omp in), and then the pairing link and code
+(see [Pairing a phone](#pairing-a-phone)); a program too old to know `pair` gets the address and
+password for a client instead.
 
 If there is no prebuilt program for the machine, the download fails, or the checksum does not
 match, the installer says why in one sentence and builds from source instead (clone into
@@ -95,6 +97,8 @@ username is convention (`omp`) and any value is accepted.
 | `OMP_STORE` | `~/.omp-bridge/sessions.json` | session store file |
 | `OMP_STATE_DIR` | `~/.omp-bridge` | state, journals, update staging |
 | `OMP_SRC` | auto-detected checkout | source the self-update rebuilds |
+| `OMP_RELEASE_BASE` | the project's `releases/latest/download` | installer only: where `latest.txt`, the archives and `CHANGELOG-<version>.md` are served from; a prebuilt install records the one it used in `install.json` and the bridge reads it from there |
+| `OMP_TAILSCALE` | found on the PATH and in the usual places | `tailscale` program `pair` and the installer ask for the machine's name |
 | `OMP_MODEL` | omp's default | default model for new sessions |
 | `OMP_EFFORT` | `medium` | default effort/thinking level |
 | `OMP_TITLE_MODEL` | the session's model | model that writes a conversation's title |
@@ -151,8 +155,63 @@ Same contract as claude-bridge: `version` (checkout) vs `running` (build stamp),
 so no running turn is ever torn down, `/update/restart` when a build landed without being
 loaded, and `/update/auto` policy with exponential backoff held by the server, not clients.
 
-A prebuilt install has no checkout, so it reports that it cannot update itself and is updated by
-re-running the installer.
+**A prebuilt install updates itself too, without a checkout.** The installer leaves two things in
+the state directory: `install.json` (`{"mode":"release","repo":…,"base":…}`, where releases are
+published) and `install.sh` with its `install.sh.sha256`, the installer that arrived inside the
+release archive and was verified by the archive's own checksum. The bridge then answers `GET
+/update` in exactly the shape a checkout gives:
+
+- *What is newer* is the release's `latest.txt`, read with one conditional request (`ETag`) at
+  most every five minutes however often a client asks (Check now has a ten-second floor), and
+  compared as numbers (`0.10.0` is newer than `0.9.0`). A pointer that is not a plain dotted
+  version is reported in `remote.error` and never acted on; with no network the answer keeps what
+  was last heard, `remote.ok` is `false`, and the error says it could not reach the project.
+- *What is new* is the `CHANGELOG-<version>.md` asset of that release (the changelog as of it,
+  fetched once per version), cut down to the releases newer than the one running: `release.version`
+  is the offered version, `release.commitsPastTag` is `0`, `release.notes` carries the sections.
+  A release that publishes no such asset costs only the notes.
+- *Doing it* is `POST /update` running the kept installer as `install.sh --update --managed`
+  after checking it against its checksum again; it downloads the archive, refuses it unless its
+  SHA-256 matches and the program starts, and only then puts it in place. A checksum that does not
+  match leaves the running program, the installer and the record as they were, fails the job in
+  its `download` step with the sentence the installer wrote, and counts against the unattended
+  backoff like a build that does not compile. The quiet barrier, the phases, the job and the
+  unattended policy are the checkout path's, untouched.
+
+Only `behind` (the number of commits) is absent: a release machine does not count in commits. A
+checkout wins over a record, and a machine installed by an older installer, without `install.json`
+or a kept installer, says what is missing (`obstacle.kind` `noInstaller`) and is brought across by
+running the install command once. `install.sh --update` on such a machine does the same download
+and install by hand, finding the release where `install.json` says. The checkout the bridge takes
+for its own is found by walking up from the program to a directory with both `.git` and
+`Package.swift`, so a home directory that happens to be a git repository is not mistaken for one.
+
+## Pairing a phone
+
+```sh
+omp-bridge pair                 # the link, a QR code, how to show it again
+omp-bridge pair --link-only     # just the link, for scripts
+omp-bridge pair --json          # everything, machine-readable
+```
+
+prints the `tailscode://connect?v=1&host=…&port=…&agent=omp&name=…&key=…` link the Tailscode apps
+open, and a QR code of it for the phone's camera (colours on a terminal, plain blocks in a pipe;
+`--color always|never` decides). It reads the port and password from the environment, then from
+`~/.config/omp-bridge.env`, so it works from a shell as well as from the installer.
+
+- **Host**: this computer's MagicDNS name from `tailscale status --json`, else its tailnet IPv4,
+  else IPv6. On a machine that is not on a tailnet (no Tailscale, signed out, turned off, not
+  answering) it is the hostname with a plain note saying so, and no code, because a phone away
+  from this network cannot use it; `--any-host` prints the code anyway, and `--link-only` refuses
+  (exit 3) without it.
+- **`key`** (the password) is always in the link while a password is set. omp-bridge's only door is
+  the Basic-auth password (`BasicAuthMiddleware` in `main.swift`), it never asks Tailscale who is
+  calling, and it refuses to start without a password, so there is no tailnet trust for the link
+  to lean on. The key is shown only on the terminal that asked, `PairingLink` redacts it
+  everywhere it is printed by that type, and `--json` carries `redacted` beside `link`.
+- **name** is the hostname, without its domain.
+
+The installer ends by running exactly this.
 
 ## Development
 
@@ -161,8 +220,16 @@ swift build
 swift test
 scripts/smoke.sh          # end-to-end against a real omp binary
 scripts/test-install.sh   # the installer, offline, against a fake release
-scripts/package-release.sh   # the release archive and checksum install.sh downloads
+scripts/package-release.sh   # the release archive (program, license, installer), its checksum and CHANGELOG-<version>.md
 ```
+
+`scripts/fake-release-server.py` is the release server the Swift tests use (ETag, request log);
+they install from it into temporary homes and run whole updates against it.
+
+The bridge depends on CodingAgentKit's `PairingKit` product for the link format and the QR
+encoder. `Package.swift` takes a sibling working copy (`../CodingAgentKit`) when there is one and
+the published tag (`Kit.version`) otherwise; `OMP_BRIDGE_KIT_REMOTE=1` forces the tag, which a
+release build should set.
 
 Requires Swift 6 and an installed `omp`. Tests cover the pure layers: NDJSON line framing,
 JSON value bridging, transcript loading, discovery, hub replay semantics, store persistence,

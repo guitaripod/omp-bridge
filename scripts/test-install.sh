@@ -68,6 +68,7 @@ cat >"$FAKE" <<'FAKE_EOF'
 case "${1:-}" in
   --version) echo "omp-bridge 9.9.9" ;;
   pair)
+    echo "$*" >"$OMP_STATE_DIR/pair-args"
     if [ -f "$OMP_STATE_DIR/pair-ok" ]; then echo "PAIRING-LINK tailscode://connect?v=1&fake=1"; exit 0; fi
     echo "unknown command" >&2
     exit 2 ;;
@@ -78,22 +79,59 @@ chmod 755 "$FAKE"
 touch -d '2001-01-01' "$FAKE"
 
 WWW="$TMP/www"
-mkdir -p "$WWW/good" "$WWW/badsum" "$WWW/noasset" "$WWW/nostart"
-"$ROOT/scripts/package-release.sh" --binary "$FAKE" --version 9.9.9 --out "$WWW/good" >"$TMP/package.log" 2>&1
+mkdir -p "$WWW/good" "$WWW/badsum" "$WWW/noasset" "$WWW/nostart" "$WWW/bare" "$WWW/badscript"
+CHANGELOG_FILE="$TMP/CHANGELOG.md"
+cat >"$CHANGELOG_FILE" <<'CHANGELOG_EOF'
+# Changelog
+
+## Unreleased
+
+- Not released yet.
+
+## 9.9.9 — 2026-10-01
+
+- The newest thing.
+
+## 9.9.8 — 2026-09-01
+
+- The thing before.
+CHANGELOG_EOF
+"$ROOT/scripts/package-release.sh" --binary "$FAKE" --version 9.9.9 --changelog "$CHANGELOG_FILE" --out "$WWW/good" >"$TMP/package.log" 2>&1
 ASSET="omp-bridge-9.9.9-$PLATFORM.tar.gz"
 printf '9.9.9\n' >"$WWW/good/latest.txt"
 printf 'ok\n' >"$WWW/health"
 
 check "the package script names the archive and its checksum" \
   test -f "$WWW/good/$ASSET" -a -f "$WWW/good/$ASSET.sha256"
-check "the archive holds the program and the license, flat" \
-  test "$(tar -tzf "$WWW/good/$ASSET" | LC_ALL=C sort | tr '\n' ' ')" = "LICENSE omp-bridge "
+check "the archive holds the program, the license and the installer, flat" \
+  test "$(tar -tzf "$WWW/good/$ASSET" | LC_ALL=C sort | tr '\n' ' ')" = "LICENSE install.sh omp-bridge "
+check "the installer in the archive is this one" \
+  bash -c "tar -xzOf '$WWW/good/$ASSET' install.sh | cmp -s - '$ROOT/install.sh'"
+check "the changelog asset starts at its own release and drops what is not released" \
+  test "$(head -1 "$WWW/good/CHANGELOG-9.9.9.md")" = "## 9.9.9 — 2026-10-01" -a "$(grep -c Unreleased "$WWW/good/CHANGELOG-9.9.9.md")" = 0 -a "$(grep -c '^## ' "$WWW/good/CHANGELOG-9.9.9.md")" = 2
+check "the package script refuses a version the changelog does not have" \
+  bash -c "! '$ROOT/scripts/package-release.sh' --binary '$FAKE' --version 9.9.7 --changelog '$CHANGELOG_FILE' --out '$TMP/refused' >/dev/null 2>&1"
+check "the notes alone can be written without building anything" \
+  bash -c "'$ROOT/scripts/package-release.sh' --notes-only --version 9.9.8 --changelog '$CHANGELOG_FILE' --out '$TMP/notes' >/dev/null && test \"\$(head -1 '$TMP/notes/CHANGELOG-9.9.8.md')\" = '## 9.9.8 — 2026-09-01' && test \$(ls '$TMP/notes' | wc -l) -eq 1"
 check "the checksum file verifies with sha256sum" \
   bash -c "cd '$WWW/good' && sha256sum -c '$ASSET.sha256' >/dev/null"
 
 cp "$WWW/good/latest.txt" "$WWW/good/$ASSET" "$WWW/badsum/"
 printf '%064d  %s\n' 0 "$ASSET" >"$WWW/badsum/$ASSET.sha256"
 cp "$WWW/good/latest.txt" "$WWW/noasset/"
+BARE="$TMP/bare"
+mkdir -p "$BARE"
+cp "$FAKE" "$BARE/omp-bridge"
+tar -czf "$WWW/bare/$ASSET" -C "$BARE" omp-bridge
+printf '%s  %s\n' "$(sha256sum "$WWW/bare/$ASSET" | cut -d' ' -f1)" "$ASSET" >"$WWW/bare/$ASSET.sha256"
+cp "$WWW/good/latest.txt" "$WWW/bare/"
+BADSCRIPT="$TMP/badscript"
+mkdir -p "$BADSCRIPT"
+cp "$FAKE" "$BADSCRIPT/omp-bridge"
+printf 'if then fi (\n' >"$BADSCRIPT/install.sh"
+tar -czf "$WWW/badscript/$ASSET" -C "$BADSCRIPT" omp-bridge install.sh
+printf '%s  %s\n' "$(sha256sum "$WWW/badscript/$ASSET" | cut -d' ' -f1)" "$ASSET" >"$WWW/badscript/$ASSET.sha256"
+cp "$WWW/good/latest.txt" "$WWW/badscript/"
 cp "$WWW/good/latest.txt" "$WWW/nostart/"
 BROKEN="$TMP/broken"
 mkdir -p "$BROKEN"
@@ -155,13 +193,20 @@ install() {
   local base="$SERVER/good"
   case "${BASE:-}" in "") ;; *) base="$BASE" ;; esac
   local environment=(env -i HOME="$HOME_DIR" USER=tester PATH="$SHIMS:$TOOLS"
-    OMP_STATE_DIR="$STATE" OMP_RELEASE_BASE="$base" OMP_PORT="${PORT:-$SERVER_PORT}"
+    OMP_STATE_DIR="$STATE" OMP_PORT="${PORT:-$SERVER_PORT}"
     OMP_HEALTH_ATTEMPTS=2 OMP_TAILSCALE="$TMP/no-tailscale" ${ENV_EXTRA:-})
+  [ "${BASE:-}" = "-" ] || environment+=(OMP_RELEASE_BASE="$base")
   if [ -n "${PIPED:-}" ]; then
     OUT="$(cat "$ROOT/install.sh" | "${environment[@]}" "$BASH_BIN" -s -- "$@" 2>&1)" && RC=0 || RC=$?
   else
     OUT="$("${environment[@]}" "$BASH_BIN" "$ROOT/install.sh" "$@" 2>&1)" && RC=0 || RC=$?
   fi
+}
+
+install_staged() {
+  local environment=(env -i HOME="$HOME_DIR" USER=tester PATH="$SHIMS:$TOOLS"
+    OMP_STATE_DIR="$STATE" OMP_PORT="${PORT:-$SERVER_PORT}" ${ENV_EXTRA:-})
+  OUT="$("${environment[@]}" "$BASH_BIN" "$STATE/staging/install.sh" "$@" 2>&1)" && RC=0 || RC=$?
 }
 
 json_field() {
@@ -192,12 +237,19 @@ check "binary install: config is private" test "$(stat -c %a "$CONF" 2>/dev/null
 check "binary install: build stamp names the version and a time the bridge can parse" \
   bash -c "test \"\$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d[\"version\"])' '$STATE/build.json')\" = 9.9.9 && grep -Eq '\"builtAt\":\"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\"' '$STATE/build.json'"
 check "binary install: no phase file outside an update" test ! -e "$STATE/update.state.json"
+check "binary install: records that it came from a release, and from where" \
+  test "$(json_field "$STATE/install.json" mode)" = release -a "$(json_field "$STATE/install.json" base)" = "$SERVER/good" -a "$(json_field "$STATE/install.json" repo)" = https://github.com/guitaripod/omp-bridge
+check "binary install: keeps the installer that came in the archive" \
+  bash -c "cmp -s '$STATE/install.sh' '$ROOT/install.sh' && test -x '$STATE/install.sh'"
+check "binary install: keeps that installer's checksum beside it" \
+  test "$(cut -d' ' -f1 "$STATE/install.sh.sha256")" = "$(sha256sum "$STATE/install.sh" | cut -d' ' -f1)"
 check "--no-service: no unit or launch agent is written" test ! -e "$HOME_DIR/.config/systemd" -a ! -e "$HOME_DIR/Library"
 check "--no-service: no service manager is called" test ! -s "$SERVICE_LOG"
 expect_has "$OUT" "Tailscale: not installed" "pre-flight: reports a missing Tailscale"
 expect_has "$OUT" "omp: not installed" "pre-flight: reports a missing omp"
 expect_has "$OUT" "What is left to do" "ending: lists what is left"
 expect_has "$OUT" "https://tailscale.com/download" "ending: says where to get Tailscale"
+expect_has "$OUT" "Then run  $PROGRAM pair  to show the code your phone scans." "ending: says how to get the code once Tailscale is up"
 expect_has "$OUT" "installed but not started" "ending: says it did not start a service"
 expect_has "$OUT" "Password  sekret123" "ending: prints the password when the program cannot pair"
 expect_has "$OUT" "OMP_PASSWORD=sekret123" "ending: prints the one line the app takes"
@@ -221,6 +273,8 @@ check "re-run: the config still has the first password" grep -Fxq 'OMP_PASSWORD=
 touch "$STATE/pair-ok"
 BASE="" PORT="" ENV_EXTRA="" install --no-service
 expect_has "$OUT" "PAIRING-LINK" "pairing: runs the program's own pair command when it has one"
+check "pairing: asks for colour only when the person's terminal can show it" \
+  test "$(cat "$STATE/pair-args")" = "pair --color never"
 expect_lacks "$OUT" "Password  " "pairing: does not print the password block instead"
 
 fresh_home
@@ -334,8 +388,8 @@ check "managed update: succeeds" test "$RC" -eq 0
 check "managed update: says nothing on stdout" test -z "$OUT"
 check "managed update: the phases go running, then building" test "$(phase_words "$PHASES")" = "running building "
 check "managed update: ends at restarting and leaves the service alone" test "$(json_field "$STATE/update.state.json" phase)" = restarting -a ! -s "$SERVICE_LOG"
-check "managed update: the state file has a start time and the installer's pid" \
-  bash -c "grep -Eq '^\\{\"phase\":\"restarting\",\"startedAt\":\"[0-9T:Z-]+\",\"pid\":[0-9]+\\}\$' '$STATE/update.state.json'"
+check "managed update: the state file has a start time, the installer's pid and the version it found" \
+  bash -c "grep -Eq '^\\{\"phase\":\"restarting\",\"startedAt\":\"[0-9T:Z-]+\",\"pid\":[0-9]+,\"target\":\"9.9.9\"\\}\$' '$STATE/update.state.json'"
 check "managed update: the log says what happened" bash -c "grep -Fq 'downloading the latest omp-bridge' '$STATE/update.log' && grep -Fq 'installed omp-bridge 9.9.9' '$STATE/update.log'"
 check "managed update: the config is untouched" test "$(cksum <"$CONF")" = "$before_config"
 check "managed update: the new program is stamped as newer than the old" test "$(stat_mtime "$PROGRAM")" -gt "$before_time"
@@ -352,6 +406,41 @@ check "failed update: records failed, and the phase it failed in" \
 check "failed update: the last log line is a sentence for a person" \
   test "$(grep '^error: ' "$STATE/update.log" | tail -1)" = "error: the download did not match its checksum and was thrown away"
 check "failed update: the installed program is untouched" test "$(cksum <"$PROGRAM")" = "$before_binary"
+
+fresh_home
+BASE="" PORT="" ENV_EXTRA="OMP_PASSWORD=sekret123" install --no-service >/dev/null
+mkdir -p "$STATE/staging"
+cp "$STATE/install.sh" "$STATE/staging/install.sh"
+before_time="$(stat_mtime "$PROGRAM")"
+sleep 1
+BASE="-" PORT="" ENV_EXTRA="" install_staged --update --managed
+check "update by the kept installer, with no base given: finds the release where the record says" \
+  test "$RC" -eq 0 -a "$(json_field "$STATE/update.state.json" phase)" = restarting -a "$(json_field "$STATE/update.state.json" target)" = 9.9.9
+check "update by the kept installer: the program is put in place again" test "$(stat_mtime "$PROGRAM")" -gt "$before_time"
+check "update by the kept installer: the record and the installer stay" \
+  test "$(json_field "$STATE/install.json" mode)" = release -a "$(json_field "$STATE/install.json" base)" = "$SERVER/good" -a -x "$STATE/install.sh"
+
+printf 'rotted\n' >"$STATE/install.sh"
+BASE="$SERVER/bare" PORT="" ENV_EXTRA="" install --update --managed
+check "an archive without an installer still updates" test "$RC" -eq 0 -a "$(json_field "$STATE/update.state.json" phase)" = restarting
+check "an archive without an installer says so and leaves the kept one alone" \
+  bash -c "grep -Fq 'this release carries no installer' '$STATE/update.log' && test \"\$(cat '$STATE/install.sh')\" = rotted"
+
+fresh_home
+BASE="" PORT="" ENV_EXTRA="" install --no-service >/dev/null
+before_binary="$(cksum <"$PROGRAM")"
+before_installer="$(cksum <"$STATE/install.sh")"
+BASE="$SERVER/badscript" PORT="" ENV_EXTRA="" install --update --managed
+check "an installer that is not a script is refused before anything is replaced" \
+  test "$RC" -ne 0 -a "$(json_field "$STATE/update.state.json" phase)" = failed -a "$(cksum <"$PROGRAM")" = "$before_binary" -a "$(cksum <"$STATE/install.sh")" = "$before_installer"
+check "an installer that is not a script: the reason is a sentence for a person" \
+  test "$(grep '^error: ' "$STATE/update.log" | tail -1)" = "error: the installer in this release does not read as a script"
+
+fresh_home
+BASE="" PORT="" ENV_EXTRA="" install --no-service >/dev/null
+BASE="$SERVER/badsum" PORT="" ENV_EXTRA="" install --update --managed
+check "a checksum failure on a release install: the old program, installer and record are as they were" \
+  test "$RC" -ne 0 -a "$("$PROGRAM" --version)" = "omp-bridge 9.9.9" -a "$(json_field "$STATE/install.json" mode)" = release
 
 fresh_home
 mkdir -p "$STATE/src/.git"

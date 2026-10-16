@@ -35,7 +35,7 @@ import Testing
     }
 
     @Test func anArgumentTheBridgeDoesNotKnowIsRefusedRatherThanIgnored() {
-        #expect(OmpVersion.unknownCommand(["omp-bridge", "pair"]) == "pair")
+        #expect(OmpVersion.unknownCommand(["omp-bridge", "frobnicate"]) == "frobnicate")
         #expect(OmpVersion.unknownCommand(["omp-bridge", "--port", "1"]) == "--port")
         #expect(OmpVersion.unknownCommand(["omp-bridge"]) == nil)
         #expect(OmpVersion.unknownCommand(["omp-bridge", "--version"]) == nil)

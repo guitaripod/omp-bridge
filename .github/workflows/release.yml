@@ -28,7 +28,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.platform }}
-          path: dist/*
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
 
   package-macos:
     runs-on: macos-15
@@ -40,7 +42,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dist-darwin-arm64
-          path: dist/*
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
 
   release:
     needs: [package-linux, package-macos]
@@ -54,9 +58,10 @@ jobs:
           pattern: dist-*
           merge-multiple: true
           path: dist
-      - name: Write the release notes and the version pointer install.sh reads
+      - name: Write the release notes, the changelog asset the bridge reads, and the version pointer install.sh reads
         run: |
           awk -v version="${GITHUB_REF_NAME#v}" '$1 == "##" && $2 == version { found = 1; next } found && $1 == "##" { exit } found' CHANGELOG.md > notes.md
+          scripts/package-release.sh --notes-only --version "${GITHUB_REF_NAME#v}" --out dist
           printf '%s\n' "${GITHUB_REF_NAME#v}" > dist/latest.txt
       - name: Create the release
         env:

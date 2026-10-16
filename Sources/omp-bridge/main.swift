@@ -10,9 +10,17 @@ if OmpVersion.isVersionRequest(CommandLine.arguments) {
     exit(0)
 }
 
+if PairingCommand.isRequest(CommandLine.arguments) {
+    let outcome = PairingCommand.run(
+        arguments: Array(CommandLine.arguments.dropFirst(2)), context: .live)
+    FileHandle.standardOutput.write(Data(outcome.stdout.utf8))
+    FileHandle.standardError.write(Data(outcome.stderr.utf8))
+    exit(outcome.status)
+}
+
 if let unknown = OmpVersion.unknownCommand(CommandLine.arguments) {
     FileHandle.standardError.write(
-        Data("omp-bridge: unknown command \"\(unknown)\". Started with no arguments it serves; --version prints the version.\n".utf8))
+        Data("omp-bridge: unknown command \"\(unknown)\". Started with no arguments it serves; --version prints the version; pair prints the link and code for the app.\n".utf8))
     exit(2)
 }
 
