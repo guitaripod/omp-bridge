@@ -184,6 +184,7 @@ actor App {
     func deleteSession(id: String) async {
         if let session = sessions.removeValue(forKey: id) {
             await session.shutdown()
+            await session.discardQueue()
             ownedTranscriptsBySession.removeValue(forKey: id)
             _ = await store.remove(id)
         } else {
@@ -360,6 +361,7 @@ actor App {
             await session.adoptExternally(loaded: loaded, ompID: record.ompSessionID)
             sessions[record.id] = session
             ownedTranscriptsBySession[record.id] = Set(await session.ownedTranscriptIDs())
+            await session.announceRestoredQueue()
         }
     }
 
@@ -443,7 +445,7 @@ actor App {
         BridgeStatus(
             agent: "omp", model: config.defaultModel ?? "", version: version,
             authenticated: await authFlow.isAuthenticatedCached(), proto: 2,
-            epoch: hub.epoch, turnWait: 1, marks: 1)
+            epoch: hub.epoch, turnWait: 1, marks: 1, queue: 1)
     }
 
     func hubEpoch() -> String { hub.epoch }

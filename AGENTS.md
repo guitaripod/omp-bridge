@@ -23,6 +23,10 @@ for the route table and mapping rules before touching anything.
   correlation. The only place that talks to omp's stdio.
 - `OmpSession.swift` — one conversation: event mapping (omp frames → BridgeEvents), queueing,
   ask-dialog handling, spend accumulation, title derivation.
+- `SharedQueue.swift` — the wire types of the shared queue (messages queued behind a running turn,
+  held server-side so every client sees one queue) and the per-session queue file in the state
+  directory. The queue logic lives in `OmpSession.swift`: `busy` (turn, compaction or an item
+  about to start) gates `drainQueue`, and Stop sets `queuePaused` rather than discarding.
 - `Titler.swift` — the model-written session title, a one-shot `omp -p` call after the first
   turn. omp only fills its own transcript title row from its terminal UI, so under the bridge
   that row is always empty and this is the only namer. `titledByModel` in the store says a

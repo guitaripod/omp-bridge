@@ -51,6 +51,7 @@ struct AbortResultDTO: Encodable {
     let ok = true
     let stopped: Bool
     let discarded: Int
+    let paused: Bool
 }
 
 private func rawResponse(
@@ -471,11 +472,69 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         } catch { return sessionError(error) }
     }
 
+    /// The shared queue: what people queued behind a running turn, held where every client of the
+    /// conversation can see, change and cancel it. A refusal is `409 already_started`: the item
+    /// left the queue for a turn, which is what the client's stale copy was wrong about.
+    @Sendable func queueResponse(_ outcome: QueueChangeOutcome) -> Response {
+        switch outcome {
+        case .changed(let snapshot):
+            return jsonResponse(snapshot)
+        case .alreadyStarted:
+            return errorResponse(QueueRefusal.alreadyStarted, status: .conflict)
+        }
+    }
+
+    router.get("sessions/:id/queue") { _, context in
+        do {
+            let session = try await resolveSession(context)
+            return jsonResponse(await session.queueSnapshot())
+        } catch { return sessionError(error) }
+    }
+
+    router.post("sessions/:id/queue") { request, context in
+        do {
+            let session = try await resolveSession(context)
+            let body = try await decodeBody(EnqueueRequest.self, request, limit: 32 << 20)
+            switch await session.enqueue(body) {
+            case .invalid(let reason):
+                return errorResponse(reason, status: .badRequest)
+            case .accepted(let started, let snapshot):
+                return jsonResponse(
+                    EnqueueAccepted(
+                        started: started, queue: snapshot.queue, paused: snapshot.paused))
+            }
+        } catch { return sessionError(error) }
+    }
+
+    router.post("sessions/:id/queue/resume") { _, context in
+        do {
+            let session = try await resolveSession(context)
+            return jsonResponse(await session.resumeQueue())
+        } catch { return sessionError(error) }
+    }
+
+    router.patch("sessions/:id/queue/:qid") { request, context in
+        do {
+            let session = try await resolveSession(context)
+            let body = try await decodeBody(EditQueuedRequest.self, request)
+            return queueResponse(
+                await session.editQueued(context.parameters.get("qid") ?? "", request: body))
+        } catch { return sessionError(error) }
+    }
+
+    router.delete("sessions/:id/queue/:qid") { _, context in
+        do {
+            let session = try await resolveSession(context)
+            return queueResponse(await session.cancelQueued(context.parameters.get("qid") ?? ""))
+        } catch { return sessionError(error) }
+    }
+
     router.post("sessions/:id/abort") { _, context in
         do {
             let session = try await resolveSession(context)
-            let stopped = await session.abort()
-            return jsonResponse(AbortResultDTO(stopped: stopped, discarded: 0))
+            let result = await session.abort()
+            return jsonResponse(
+                AbortResultDTO(stopped: result.stopped, discarded: 0, paused: result.paused))
         } catch { return sessionError(error) }
     }
 
@@ -618,6 +677,7 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
             let session = try await resolveSession(context)
             let id = session.id
             let running = await session.isRunningValue()
+            let greeting = await session.queueGreeting()
             let attachment = await app.hubAttachment(sinceEpoch: nil, sinceSeq: nil)
             let body = ResponseBody { writer in
                 func write(_ event: BridgeEvent) async throws {
@@ -630,6 +690,7 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
                 }
                 try await detachingAfter(attachment.id, from: app) {
                     try await write(.status(running ? "running" : "idle"))
+                    if let greeting { try await write(.queue(greeting)) }
                     for frame in attachment.replay {
                         if case .session(let frameID, let event) = frame.event, frameID == id {
                             try await write(event)
@@ -673,20 +734,8 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     }
 
     @Sendable func saveAttachments(_ attachments: [SendAttachment], sessionID: String) -> [FileRef] {
-        let dir = "\(config.attachmentsDir)/\(sessionID)"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        var refs: [FileRef] = []
-        for attachment in attachments {
-            guard let data = Data(base64Encoded: attachment.dataBase64) else { continue }
-            let name = "\(Int(Date().timeIntervalSince1970))-\(attachment.filename ?? "file.bin")"
-            let path = "\(dir)/\(name)"
-            try? data.write(to: URL(fileURLWithPath: path))
-            refs.append(
-                FileRef(
-                    path: path, mime: attachment.mime, filename: attachment.filename,
-                    url: "/attachments/\(sessionID)/\(name)"))
-        }
-        return refs
+        AttachmentStore.save(attachments, sessionID: sessionID, directory: config.attachmentsDir)
+            .map(\.file)
     }
 
     @Sendable func sessionSnapshot(_ session: OmpSession) async -> Session {
@@ -695,6 +744,7 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         let lastTurn = await session.turnsSnapshot().last
         let running = await session.isRunningValue()
         let externallyLive = await session.externallyLiveValue()
+        let held = await session.queueSnapshot()
         return Session(
             id: session.id, title: await session.titleText(),
             directory: await session.directoryPath(), ompSessionID: await session.currentOmpSessionID(),
@@ -704,7 +754,8 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
             messages: messages, lastCostUSD: lastTurn?.costUSD,
             lastTokens: lastTurn?.tokens.total, customTitle: await session.customTitleValue(),
             autoTitled: await session.autoTitledValue(), interruption: nil, autoResume: nil,
-            active: running || externallyLive, turnOpen: running)
+            active: running || externallyLive, turnOpen: running, queue: held.queue,
+            queuePaused: held.paused)
     }
 
     @Sendable func resolveGitDirectory(_ request: Request, app: App) async -> String? {

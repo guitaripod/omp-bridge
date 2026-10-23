@@ -121,6 +121,10 @@ struct Session: Codable, Sendable {
     /// ended reads the answer here on its next look rather than staying busy for good.
     var active: Bool?
     var turnOpen: Bool?
+    /// Stamped when a session is served: the messages waiting behind the running turn, in arrival
+    /// order, and whether draining is held back after a Stop or a restart.
+    var queue: [QueuedItem]?
+    var queuePaused: Bool?
 
     var summary: SessionSummary {
         SessionSummary(
@@ -249,9 +253,13 @@ enum BridgeEvent: Codable, Sendable {
     case error(String)
     case compaction(phase: String, error: String?)
     case interrupted(Interruption?)
+    /// The shared queue changed. Always the whole snapshot, so a client that missed an earlier
+    /// frame is right again after any later one.
+    case queue(QueueSnapshot)
 
     private enum CodingKeys: String, CodingKey {
         case type, message, messageID, delta, tool, status, error, phase, interruption
+        case queue, paused
     }
 
     func encode(to encoder: Encoder) throws {
@@ -281,6 +289,10 @@ enum BridgeEvent: Codable, Sendable {
         case .interrupted(let interruption):
             try c.encode("interrupted", forKey: .type)
             try c.encodeIfPresent(interruption, forKey: .interruption)
+        case .queue(let snapshot):
+            try c.encode("queue", forKey: .type)
+            try c.encode(snapshot.queue, forKey: .queue)
+            try c.encode(snapshot.paused, forKey: .paused)
         }
     }
 
@@ -303,6 +315,11 @@ enum BridgeEvent: Codable, Sendable {
                 error: try c.decodeIfPresent(String.self, forKey: .error))
         case "interrupted":
             self = .interrupted(try c.decodeIfPresent(Interruption.self, forKey: .interruption))
+        case "queue":
+            self = .queue(
+                QueueSnapshot(
+                    queue: try c.decodeIfPresent([QueuedItem].self, forKey: .queue) ?? [],
+                    paused: try c.decodeIfPresent(Bool.self, forKey: .paused) ?? false))
         default: self = .error(try c.decode(String.self, forKey: .error))
         }
     }
@@ -425,6 +442,10 @@ struct BridgeStatus: Encodable {
     /// The protocol version of the per-conversation marks — saved, pinned, archived, last look —
     /// so a client can tell a bridge that holds them from one that cannot without a listing.
     var marks: Int
+    /// The protocol version of the shared queue (messages queued behind a running turn are held
+    /// here, not on the device that queued them), so a client can tell a bridge that holds one
+    /// from an older bridge, whose queue only the sending device knows.
+    var queue: Int
 }
 
 struct AgentCommandDTO: Codable, Sendable {

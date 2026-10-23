@@ -1,13 +1,5 @@
 import Foundation
 
-struct QueuedPrompt: Codable, Sendable {
-    var prompt: String
-    var displayPrompt: String
-    var model: String?
-    var effort: String?
-    var compaction: Bool?
-}
-
 struct TurnRecord: Codable, Sendable {
     var at: Date
     var seconds: Double?
@@ -65,7 +57,22 @@ actor OmpSession {
     private(set) var compacting = false
     private var compactionStartedAt: Date?
     private var lastEventAt = Date.distantPast
-    private var queued: [QueuedPrompt] = []
+    /// The messages people queued behind the running turn, in arrival order. Held here rather
+    /// than on each device so every client of the conversation sees and can change the same
+    /// queue; a file in the state directory keeps it across a restart.
+    private var queue: [HeldQueueItem] = []
+    /// A Stop ended the running turn, or a restart brought the queue back and nobody has said to
+    /// carry on. Cleared by a new message, an enqueue or a resume.
+    private var queuePaused = false
+    /// The newest ids of queue items that left the queue for a turn, so a retried enqueue does not
+    /// run twice and a cancel can tell "already started" from "already gone".
+    private var startedQueueIDs: [String] = []
+    /// An item has left the queue, or a message has been accepted, and its turn or compaction has
+    /// not opened yet. Counts as busy: the engine is about to be spoken to, and a second message
+    /// arriving in the gap must queue behind it rather than start beside it.
+    private var starting = false
+    private var queueRestored = false
+    private let queueURL: URL
     private var turns: [TurnRecord] = []
     private(set) var totalCostUSD = 0.0
     private(set) var totalTokens = TokenCounts()
@@ -172,6 +179,15 @@ actor OmpSession {
         self.hub = hub
         self.quietRegistry = quietRegistry
         self.journal = journal
+        queueURL = QueueFile.url(stateDir: config.stateDir, sessionID: id)
+        if let restored = QueueFile.load(from: queueURL) {
+            queue = restored.items
+            queuePaused = true
+            queueRestored = true
+            if !restored.paused {
+                QueueFile.write(PersistedQueue(items: restored.items, paused: true), to: queueURL)
+            }
+        }
     }
 
     func snapshotMessages() -> [Message] {
@@ -386,22 +402,24 @@ actor OmpSession {
         guard !text.isEmpty else { throw BridgeError.badRequest("Empty message") }
 
         if running { await healDeadTurn() }
+        if queuePaused {
+            queuePaused = false
+            await publishQueue()
+        }
 
         if text.hasPrefix("/compact") {
-            let instructions =
-                text.dropFirst("/compact".count).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !compacting else {
                 throw BridgeError.conflict("A compaction is already running")
             }
-            if running || !queued.isEmpty {
-                let position = queued.count
-                queued.append(
-                    QueuedPrompt(
-                        prompt: instructions, displayPrompt: text, model: nil, effort: nil,
-                        compaction: true))
-                return (true, position)
+            let held = Self.held(
+                id: UUID().uuidString, text: text, kind: QueuedItem.commandKind, model: nil,
+                effort: nil, stored: [])
+            if busy {
+                await append(held)
+                return (true, queue.count - 1)
             }
-            Task { try? await startCompaction(instructions: instructions.isEmpty ? nil : instructions) }
+            starting = true
+            Task { await self.launch(held) }
             return (false, nil)
         }
 
@@ -410,41 +428,57 @@ actor OmpSession {
             return (false, nil)
         }
 
-        let promptText = text
-        if let wantEffort, wantEffort != effort {
-            effort = wantEffort
-            if let process {
-                _ = await process.request(
-                    "set_thinking_level", fields: ["level": wantEffort])
-            }
-        }
-        if let wantModel, wantModel != model, !wantModel.isEmpty {
-            let proc = try await ensureProcess()
-            guard await applyModelOn(proc, wantModel) else {
-                throw BridgeError.badRequest(
-                    "This machine's oh-my-pi has no model called \(wantModel)")
-            }
-            model = wantModel
+        if busy {
+            await append(
+                Self.held(
+                    id: UUID().uuidString, text: shown ?? text, kind: QueuedItem.promptKind,
+                    model: wantModel, effort: wantEffort,
+                    stored: files.map { StoredAttachment(file: $0, size: Self.size(of: $0)) }))
+            return (true, queue.count - 1)
         }
 
-        var userParts: [Part] = [.text(shown ?? text)]
+        starting = true
+        do {
+            let promptText = text
+            if let wantEffort, wantEffort != effort {
+                effort = wantEffort
+                if let process {
+                    _ = await process.request(
+                        "set_thinking_level", fields: ["level": wantEffort])
+                }
+            }
+            if let wantModel, wantModel != model, !wantModel.isEmpty {
+                let proc = try await ensureProcess()
+                guard await applyModelOn(proc, wantModel) else {
+                    throw BridgeError.badRequest(
+                        "This machine's oh-my-pi has no model called \(wantModel)")
+                }
+                model = wantModel
+            }
+            await echo(shown ?? text, files: files)
+            try await startTurn(prompt: promptText, display: shown ?? text)
+        } catch {
+            starting = false
+            await drainQueue()
+            throw error
+        }
+        starting = false
+        return (false, nil)
+    }
+
+    /// Puts the user's words in the conversation and on the wire. A queued message is not part of
+    /// the conversation until it starts: the transcript only ever holds what the engine was sent.
+    private func echo(_ display: String, files: [FileRef]) async {
+        var userParts: [Part] = [.text(display)]
         userParts.append(contentsOf: files.map { Part.file($0) })
         let userMessage = Message(
             id: "u-\(UUID().uuidString.prefix(8))", role: .user,
             parts: userParts, createdAt: Date(), seconds: nil, model: nil, usage: nil,
             costUSD: nil)
         messages.append(userMessage)
-        titleFromFirstPrompt(shown ?? text)
+        titleFromFirstPrompt(display)
         touch()
         await publish(.messageUpserted(userMessage))
-
-        if running || compacting || !queued.isEmpty {
-            let position = queued.count
-            queued.append(QueuedPrompt(prompt: promptText, displayPrompt: shown ?? text, model: wantModel, effort: wantEffort))
-            return (true, position)
-        }
-        try await startTurn(prompt: promptText, display: shown ?? text)
-        return (false, nil)
     }
 
     /// How long a turn may go without a word from the engine before its liveness is questioned.
@@ -511,6 +545,7 @@ actor OmpSession {
     private func startTurn(prompt: String, display: String) async throws {
         let proc = try await ensureProcess()
         running = true
+        starting = false
         turnStartedAt = Date()
         turnPrompt = display
         turnCalls = 0
@@ -555,16 +590,22 @@ actor OmpSession {
         return "\(provider)/\(id)"
     }
 
-    func abort() async -> Bool {
-        guard running, let process else { return false }
+    /// Ends the running turn and holds the queue back: Stop means stop, and leaving the queue to
+    /// drain would start a fresh turn the moment the one just killed ended. What people queued is
+    /// theirs to cancel, so the items stay until a new message, an enqueue or a resume.
+    func abort() async -> (stopped: Bool, paused: Bool) {
+        let shouldPause = running || !queue.isEmpty
+        let newlyPaused = shouldPause && !queuePaused
+        if shouldPause { queuePaused = true }
+        if newlyPaused { await publishQueue() }
+        guard running, let process else { return (false, newlyPaused) }
         _ = await process.request("abort")
-        queued.removeAll()
         finishTurn(cause: .aborted)
-        return true
+        return (true, newlyPaused)
     }
 
     func clear() throws {
-        guard !running, queued.isEmpty else {
+        guard !running, queue.isEmpty else {
             throw BridgeError.conflict("A turn is running or queued")
         }
         messages.removeAll()
@@ -587,6 +628,7 @@ actor OmpSession {
         }
         let proc = try await ensureProcess()
         compacting = true
+        starting = false
         let startedAt = Date()
         compactionStartedAt = startedAt
         await quietRegistry.increment()
@@ -647,20 +689,37 @@ actor OmpSession {
         await publish(.messageUpserted(seam))
     }
 
+    /// Starts the head of the queue when nothing is running or about to run and nothing holds the
+    /// queue back. Asked at every point a turn or a compaction can end.
     private func drainQueue() async {
-        guard !running, !compacting, !queued.isEmpty else { return }
-        let next = queued.removeFirst()
+        guard !busy, !queuePaused, !queue.isEmpty else { return }
+        let next = queue.removeFirst()
+        starting = true
+        rememberStarted(next.item.id)
+        await publishQueue()
+        await launch(next)
+    }
+
+    /// Runs an item that has left the queue, or that was accepted with the queue empty. The caller
+    /// has already set ``starting``. A compaction opens no transcript row of its own; anything else
+    /// is written into the conversation here, the moment it is sent, and gets the model and effort
+    /// it was queued with.
+    private func launch(_ held: HeldQueueItem) async {
+        defer { starting = false }
+        let text = held.item.text.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
-            if next.compaction == true {
-                try await startCompaction(instructions: next.prompt.isEmpty ? nil : next.prompt)
+            if text.hasPrefix("/compact") {
+                let instructions =
+                    text.dropFirst("/compact".count).trimmingCharacters(in: .whitespacesAndNewlines)
+                try await startCompaction(instructions: instructions.isEmpty ? nil : instructions)
                 return
             }
-            if let wantEffort = next.effort, wantEffort != effort {
+            if let wantEffort = held.item.effort, wantEffort != effort {
                 effort = wantEffort
                 let proc = try await ensureProcess()
                 _ = await proc.request("set_thinking_level", fields: ["level": wantEffort])
             }
-            if let wantModel = next.model, wantModel != model, !wantModel.isEmpty {
+            if let wantModel = held.item.model, wantModel != model, !wantModel.isEmpty {
                 let proc = try await ensureProcess()
                 if await applyModelOn(proc, wantModel) {
                     model = wantModel
@@ -669,10 +728,168 @@ actor OmpSession {
                         .error("This machine's oh-my-pi has no model called \(wantModel); staying on \(model)"))
                 }
             }
-            try await startTurn(prompt: next.prompt, display: next.displayPrompt)
+            await echo(held.item.text, files: held.files)
+            try await startTurn(prompt: Self.prompt(text, files: held.files), display: held.item.text)
         } catch {
             await publish(.error(error.localizedDescription))
         }
+    }
+
+    // MARK: shared queue
+
+    /// What a client draws: the items waiting, in arrival order, and whether draining is held back.
+    func queueSnapshot() -> QueueSnapshot {
+        QueueSnapshot(queue: queue.map(\.item), paused: queuePaused)
+    }
+
+    /// The snapshot a new subscriber is greeted with, or `nil` when there is nothing to say.
+    func queueGreeting() -> QueueSnapshot? {
+        let snapshot = queueSnapshot()
+        return snapshot.queue.isEmpty && !snapshot.paused ? nil : snapshot
+    }
+
+    /// Tells subscribers a queue that came back from disk is there, and paused. Run once the
+    /// session is registered, so the bridge-wide stream hears it too.
+    func announceRestoredQueue() async {
+        guard queueRestored else { return }
+        queueRestored = false
+        await publish(.queue(queueSnapshot()))
+    }
+
+    private var busy: Bool { running || compacting || starting }
+
+    private func persistQueue() {
+        QueueFile.write(
+            queue.isEmpty ? nil : PersistedQueue(items: queue, paused: queuePaused), to: queueURL)
+    }
+
+    /// Writes the queue to disk and tells every client what it now holds.
+    private func publishQueue() async {
+        persistQueue()
+        await publish(.queue(queueSnapshot()))
+    }
+
+    private func append(_ held: HeldQueueItem) async {
+        queue.append(held)
+        await publishQueue()
+    }
+
+    private static let startedMemory = 64
+
+    private func rememberStarted(_ itemID: String) {
+        startedQueueIDs.append(itemID)
+        startedQueueIDs = Array(startedQueueIDs.suffix(Self.startedMemory))
+    }
+
+    static func held(
+        id: String, text: String, kind: String, model: String?, effort: String?,
+        stored: [StoredAttachment]
+    ) -> HeldQueueItem {
+        HeldQueueItem(
+            item: QueuedItem(
+                id: id, text: text, kind: kind, model: model, effort: effort,
+                attachments: stored.map {
+                    QueueAttachment(
+                        mime: $0.file.mime, filename: $0.file.filename ?? "", size: $0.size)
+                },
+                createdAt: Date()),
+            files: stored.map(\.file))
+    }
+
+    private static func size(of file: FileRef) -> Int {
+        ((try? FileManager.default.attributesOfItem(atPath: file.path)[.size]) as? Int) ?? 0
+    }
+
+    /// The prompt the engine is handed: the words, then where each attached file is so the Read
+    /// tool can open it.
+    static func prompt(_ text: String, files: [FileRef]) -> String {
+        guard !files.isEmpty else { return text }
+        let lines = files.map { "Attached image (use the Read tool to view it): \($0.path)" }
+        return ([text] + lines).joined(separator: "\n")
+    }
+
+    /// Queues a message behind the running turn, or starts it at once when nothing is running.
+    /// Idempotent on the client's id: an item already queued, or one that already started, is
+    /// answered with the current snapshot and changes nothing.
+    func enqueue(_ request: EnqueueRequest) async -> EnqueueOutcome {
+        if running { await healDeadTurn() }
+        let itemID = request.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !itemID.isEmpty else { return .invalid("An item needs an id.") }
+        let kind = request.kind ?? QueuedItem.promptKind
+        guard kind == QueuedItem.promptKind || kind == QueuedItem.commandKind else {
+            return .invalid("kind is prompt or command.")
+        }
+        if queue.contains(where: { $0.item.id == itemID }) {
+            return .accepted(started: false, snapshot: queueSnapshot())
+        }
+        if startedQueueIDs.contains(itemID) {
+            return .accepted(started: true, snapshot: queueSnapshot())
+        }
+        let attachments = request.attachments ?? []
+        guard !request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !attachments.isEmpty
+        else { return .invalid("An item needs text or an attachment.") }
+        let held = Self.held(
+            id: itemID, text: request.text, kind: kind, model: request.model,
+            effort: request.effort,
+            stored: AttachmentStore.save(
+                attachments, sessionID: id, directory: config.attachmentsDir))
+        let wasPaused = queuePaused
+        queuePaused = false
+        if !busy, queue.isEmpty {
+            starting = true
+            rememberStarted(itemID)
+            if wasPaused { await publishQueue() }
+            await launch(held)
+            return .accepted(started: true, snapshot: queueSnapshot())
+        }
+        await append(held)
+        await drainQueue()
+        return .accepted(started: false, snapshot: queueSnapshot())
+    }
+
+    /// Changes a queued item's words, model or effort. An item that has started, or is gone, can
+    /// no longer be changed.
+    func editQueued(_ itemID: String, request: EditQueuedRequest) async -> QueueChangeOutcome {
+        guard let index = queue.firstIndex(where: { $0.item.id == itemID }) else {
+            return .alreadyStarted
+        }
+        if let text = request.text { queue[index].item.text = text }
+        if let model = request.model { queue[index].item.model = model.isEmpty ? nil : model }
+        if let effort = request.effort { queue[index].item.effort = effort.isEmpty ? nil : effort }
+        await publishQueue()
+        return .changed(queueSnapshot())
+    }
+
+    /// Takes an item out of the queue. Cancelling what is already gone is fine, so a retry is
+    /// safe; cancelling what has started is not.
+    func cancelQueued(_ itemID: String) async -> QueueChangeOutcome {
+        guard let index = queue.firstIndex(where: { $0.item.id == itemID }) else {
+            return startedQueueIDs.contains(itemID) ? .alreadyStarted : .changed(queueSnapshot())
+        }
+        let removed = queue.remove(at: index)
+        for file in removed.files { try? FileManager.default.removeItem(atPath: file.path) }
+        await publishQueue()
+        return .changed(queueSnapshot())
+    }
+
+    /// Lets a held queue run again, starting its head when nothing is running.
+    func resumeQueue() async -> QueueSnapshot {
+        if queuePaused {
+            queuePaused = false
+            await publishQueue()
+        }
+        await drainQueue()
+        return queueSnapshot()
+    }
+
+    /// A deleted conversation takes its queue, and the files kept for it, with it.
+    func discardQueue() {
+        for held in queue {
+            for file in held.files { try? FileManager.default.removeItem(atPath: file.path) }
+        }
+        queue = []
+        QueueFile.write(nil, to: queueURL)
     }
 
     private func finishTurn(cause: TurnEndCause = .agentEnd) {
@@ -1538,7 +1755,7 @@ extension OmpSession {
     /// so the rows an engine files on its way out — one for every chat a restart closed — neither
     /// move a chat to the top nor wear it as live.
     func refreshFromTranscriptIfIdle() async {
-        guard !running, compacting == false, queued.isEmpty, let file = ompSessionFile else {
+        guard !busy, let file = ompSessionFile else {
             externallyLive = false
             return
         }

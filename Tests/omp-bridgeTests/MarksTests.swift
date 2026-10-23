@@ -306,9 +306,10 @@ import Testing
     @Test func aBridgeThatHoldsMarksSaysSoInItsStatus() throws {
         let status = BridgeStatus(
             agent: "omp", model: "", version: "x", authenticated: true, proto: 2, epoch: "e",
-            turnWait: 1, marks: 1)
+            turnWait: 1, marks: 1, queue: 1)
         let data = try WireCoding.encoder.encode(status)
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(object["marks"] as? Int == 1)
+        #expect(object["queue"] as? Int == 1)
     }
 }

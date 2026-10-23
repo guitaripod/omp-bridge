@@ -4,7 +4,12 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
-## Unreleased
+## 0.9.0 — 2026-10-23
+
+- A message queued behind a running turn now lives on the bridge, so every device on the conversation shows the same queue and can edit or cancel it, instead of the phone that queued it being the only one to know. `GET /sessions/:id/queue` reads it; `POST /sessions/:id/queue` adds an item under the client's own id (idempotent, and started at once when nothing is running), `PATCH` and `DELETE /sessions/:id/queue/:qid` change or cancel one that has not started (`409 already_started` once it has), and `POST /sessions/:id/queue/resume` lets a paused queue run. Every change is a `queue` event carrying the whole queue, `GET /sessions/:id` carries `queue` and `queuePaused`, and `/status` reports `"queue": 1`. Same contract as claude-bridge's.
+- A queued message is not in the conversation until it starts: its user message is written when its turn begins. The bridge starts the next one only when neither a turn nor a compaction is running.
+- Stop pauses the queue instead of throwing it away, and a new message, an enqueue or Resume lets it run again. A queue survives a restart, attachments included (it is kept in `queues/` in the state directory), and comes back paused so nothing runs unattended after a crash.
+- An older app sending while a turn runs still works: its message joins the queue like any other, so a newer app sees it.
 
 - Installing no longer needs Swift or git. The installer downloads a prebuilt program for the machine (Linux x86_64 and aarch64, macOS on Apple silicon), checks its SHA-256 and starts it, in seconds instead of a long build. It builds from source only when there is no program for the machine, the download fails or does not check out, or `--from-source` asks, and then says why in one sentence and where to get Swift if it is missing. The source build no longer needs `OMP_REPO` to know where the project lives.
 - The installer looks at the machine first and says in plain words whether Tailscale is installed and signed in and whether omp is installed and signed in, carries on either way, and ends with what is actually left to do and the address and password for a client. `--no-service` installs everything except the service. The bridge answers `--version`, and refuses an argument it does not know rather than starting a second server.

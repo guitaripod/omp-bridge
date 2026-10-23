@@ -134,6 +134,33 @@ ordinary, and each gets its own answer the moment the session settles.
 `GET /status` carries `turnWait: 1`, the protocol version of this route, so a client can tell
 "too old to have this" from "session not found" without probing blind.
 
+## Shared queue
+
+A message queued behind a running turn lives on the bridge, not on the device that queued it, so
+every client of the conversation shows the same queue and can edit or cancel it. Same contract as
+claude-bridge's. The bridge drains it: when a turn closes and no compaction is running, the head
+starts, unless the queue is paused.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/sessions/:id/queue` | none | `{"queue": [Item], "paused": bool}` |
+| POST | `/sessions/:id/queue` | `{id, text, kind?: "prompt"\|"command", model?, effort?, attachments?}` | `{"started": bool, "queue": [Item], "paused": bool}`. `id` is the client's own UUID and makes the call idempotent. Nothing running: the item starts at once and never appears in the queue. Otherwise it is appended. Either way the queue stops being paused |
+| PATCH | `/sessions/:id/queue/:qid` | `{text?, model?, effort?}` | the snapshot; `409 {"error": "already_started"}` when the item started or is gone |
+| DELETE | `/sessions/:id/queue/:qid` | none | the snapshot (also when the id is already gone); `409 already_started` when it has started |
+| POST | `/sessions/:id/queue/resume` | none | the snapshot; clears `paused` and starts the head when idle |
+
+An item is `{id, text, kind, model?, effort?, attachments, createdAt}`; `attachments` is metadata
+only (`{mime, filename, size}`), the bytes arrive once with the enqueue as `dataBase64` and are
+kept under the state directory's `attachments/`. A queued item is not in the transcript: its user
+message is written when it starts. `POST /sessions/:id/abort` ends the running turn and sets
+`paused` (the items stay); a new message, an enqueue or `resume` clears it. The queue is kept in
+`queues/<session>.json` in the state directory and comes back `paused: true` after a restart. The
+legacy `POST /sessions/:id/message` stays: sent while a turn runs it becomes an item with a
+bridge-made id. Every change is an SSE frame `{"type": "queue", "queue": [Item], "paused": bool}`
+with the whole snapshot, also on `/stream`; the hello of `/sessions/:id/events` includes it when
+the queue is non-empty or paused, and `GET /sessions/:id` carries `queue` and `queuePaused`.
+`GET /status` carries `queue: 1`.
+
 ## Session marks
 
 What a person decides about a conversation lives here, beside the transcripts, so every client
