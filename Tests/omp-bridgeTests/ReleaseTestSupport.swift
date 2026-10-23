@@ -124,8 +124,16 @@ final class ReleaseWorld: @unchecked Sendable {
 
     func base(_ scenario: String) -> String { "http://127.0.0.1:\(port)/\(scenario)" }
 
+    private static var streamSocketType: Int32 {
+        #if canImport(Darwin)
+            return SOCK_STREAM
+        #else
+            return Int32(SOCK_STREAM.rawValue)
+        #endif
+    }
+
     var closedBase: String {
-        let socketFD = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        let socketFD = socket(AF_INET, Self.streamSocketType, 0)
         var address = sockaddr_in()
         address.sin_family = sa_family_t(AF_INET)
         address.sin_addr.s_addr = inet_addr("127.0.0.1")
