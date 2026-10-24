@@ -633,7 +633,7 @@ actor OmpSession {
         compactionStartedAt = startedAt
         await quietRegistry.increment()
         await publish(.compaction(phase: "started", error: nil))
-        var fields: [String: Any] = [:]
+        var fields: [String: any Sendable] = [:]
         if let instructions, !instructions.isEmpty { fields["customInstructions"] = instructions }
         let response = await proc.request("compact", fields: fields, timeout: 900)
         compacting = false

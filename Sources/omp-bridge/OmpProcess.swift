@@ -307,7 +307,7 @@ actor OmpProcess {
     }
 
     func request(
-        _ type: String, fields: [String: Any] = [:], timeout: TimeInterval = 30
+        _ type: String, fields: [String: any Sendable] = [:], timeout: TimeInterval = 30
     ) async -> OmpRPCResponse {
         nextRequestID += 1
         let id = "req-\(nextRequestID)"

@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.9.1 — 2026-10-25
+
+- The 0.9.0 release has no downloads, because its macOS build failed on the older Swift compiler the release machine uses; 0.9.1 has them for Linux and macOS, so a bridge installed from a release can update again. Nothing else changes.
+
 ## 0.9.0 — 2026-10-23
 
 - A message queued behind a running turn now lives on the bridge, so every device on the conversation shows the same queue and can edit or cancel it, instead of the phone that queued it being the only one to know. `GET /sessions/:id/queue` reads it; `POST /sessions/:id/queue` adds an item under the client's own id (idempotent, and started at once when nothing is running), `PATCH` and `DELETE /sessions/:id/queue/:qid` change or cancel one that has not started (`409 already_started` once it has), and `POST /sessions/:id/queue/resume` lets a paused queue run. Every change is a `queue` event carrying the whole queue, `GET /sessions/:id` carries `queue` and `queuePaused`, and `/status` reports `"queue": 1`. Same contract as claude-bridge's.
