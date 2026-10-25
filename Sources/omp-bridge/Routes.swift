@@ -244,6 +244,13 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
             : errorResponse(status.reason ?? "Nothing to restart into", status: .conflict)
     }
 
+    router.post("restart") { _, _ in
+        let (accepted, status) = await app.updateService.restart(anyway: true)
+        return accepted
+            ? jsonResponse(status, status: .accepted)
+            : errorResponse(status.reason ?? "This bridge cannot restart itself", status: .conflict)
+    }
+
     router.post("update/auto") { request, _ in
         let enabled = (try? await decodeBody(AutoResumeRequest.self, request).enabled) ?? false
         return jsonResponse(await app.updateService.setAutomation(enabled: enabled))

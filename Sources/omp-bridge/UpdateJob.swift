@@ -44,15 +44,19 @@ struct UpdateJob: Codable, Sendable, Equatable {
     var startedAt: Date
     var stepStartedAt: Date
     var finishedAt: Date?
+    /// A restart taken with no build waiting: it loads what is already running, so nothing was
+    /// installed and the update policy has nothing to learn from it.
+    var reloadOnly: Bool?
 
     static func begin(
-        _ kind: Kind, automatic: Bool, from: String?, target: String?, now: Date = Date()
+        _ kind: Kind, automatic: Bool, from: String?, target: String?, reloadOnly: Bool = false,
+        now: Date = Date()
     ) -> UpdateJob {
         UpdateJob(
             id: UUID().uuidString, kind: kind, automatic: automatic,
             step: kind == .update ? .download : .waitForIdle, outcome: nil, from: from,
             target: target, landed: nil, reason: nil, startedAt: now, stepStartedAt: now,
-            finishedAt: nil)
+            finishedAt: nil, reloadOnly: reloadOnly ? true : nil)
     }
 
     var isFinished: Bool { outcome != nil }
