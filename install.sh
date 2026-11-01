@@ -354,16 +354,35 @@ check_space() {
     fail "only $(( free / 1024 )) MB free where the checkout lives; the build needs about 2 GB"
 }
 
+# Linux links the Swift runtime in, as the release build does. A dynamic build records the swiftly
+# directory of the toolchain that made it as its runpath, so the next toolchain upgrade deletes the
+# libraries under an installed program and its service restarts forever on a missing libswiftCore.
+# The native build system is asked for by name because Swift Build cannot yet finish that link on
+# a 6.4 toolchain.
+swift_release() {
+  local flags=(-c release)
+  [ "$(uname -s)" = "Linux" ] && flags+=(--build-system native --static-swift-stdlib)
+  ( cd "$SRC" && swift build "${flags[@]}" "$@" )
+}
+
+# A program that cannot start is worse than none: the service restarts it forever and the app only
+# hears that the machine is unreachable.
+require_starts() {
+  [ -x "$1" ] && [ -n "$(bounded 15 "$1" --version </dev/null 2>/dev/null || true)" ] ||
+    fail "the program that was just built does not start on this machine"
+}
+
 build() {
   check_space
   say "building (this takes a few minutes the first time)"
-  if ! ( cd "$SRC" && swift build -c release ) >>"$LOG" 2>&1; then
+  if ! swift_release >>"$LOG" 2>&1; then
     # A toolchain upgraded under a stale .build produces the same failure forever, and one clean is
     # the difference between an update that heals itself and a machine that never updates again.
     say "build failed; cleaning and trying once more"
     ( cd "$SRC" && swift package clean ) >>"$LOG" 2>&1 || true
-    ( cd "$SRC" && swift build -c release ) >>"$LOG" 2>&1 || fail "$(build_reason)"
+    swift_release >>"$LOG" 2>&1 || fail "$(build_reason)"
   fi
+  require_starts "$(swift_release --show-bin-path)/omp-bridge"
   install_binary
   stamp_build
   write_install_record source
@@ -371,8 +390,9 @@ build() {
 
 install_binary() {
   mkdir -p "$BIN_DIR"
-  cp -f "$SRC/.build/release/omp-bridge" "$BIN"
-  chmod 755 "$BIN"
+  cp -f "$(swift_release --show-bin-path)/omp-bridge" "$BIN_DIR/.omp-bridge.new"
+  chmod 755 "$BIN_DIR/.omp-bridge.new"
+  mv -f "$BIN_DIR/.omp-bridge.new" "$BIN"
 }
 
 # What the binary that was just produced was built from.
