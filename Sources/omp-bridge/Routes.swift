@@ -747,7 +747,6 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
 
     @Sendable func sessionSnapshot(_ session: OmpSession) async -> Session {
         let messages = await session.snapshotMessages()
-        let totals = await session.spendTotalsSnapshot()
         let lastTurn = await session.turnsSnapshot().last
         let running = await session.isRunningValue()
         let externallyLive = await session.externallyLiveValue()

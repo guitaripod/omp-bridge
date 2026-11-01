@@ -134,10 +134,10 @@ actor SessionStore {
 
     private func schedulePersist() {
         persistTask?.cancel()
-        persistTask = Task { [path] in
+        persistTask = Task {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
-            await self.persistNow()
+            self.persistNow()
         }
     }
 
