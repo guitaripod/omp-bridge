@@ -161,6 +161,10 @@ with the whole snapshot, also on `/stream`; the hello of `/sessions/:id/events` 
 the queue is non-empty or paused, and `GET /sessions/:id` carries `queue` and `queuePaused`.
 `GET /status` carries `queue: 1`.
 
+## Schedules
+
+The machine keeps the clock: a schedule lives in the state directory's `schedules.json` and asks whether or not any app is open, through the same road a person's message takes (so it queues behind a live turn rather than racing it). The routes, rules and run outcomes are claude-bridge's exactly — `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/:id`, `POST /schedules/:id/run`; rules `once`, `daily`, `weekdays`, `weekly`, `hours`, read in the maker's `timeZone`; outcomes `running`, `answered`, `quiet`, `failed`, `missed`, `caughtUp`. With `quiet` on, a run after an answered one is told, in what omp is handed and never in what the conversation keeps, to answer `NOTHING NEW` when nothing changed; such a run's answer becomes "Nothing new since the last check." and the conversation is marked read. A run that has to queue behind a live turn queues as the words alone. A machine that was off asks once if the latest missed time is within 12 hours and records `missed` otherwise.
+
 ## Session marks
 
 What a person decides about a conversation lives here, beside the transcripts, so every client

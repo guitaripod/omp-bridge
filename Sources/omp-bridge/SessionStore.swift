@@ -27,6 +27,8 @@ struct SessionRecord: Codable, Sendable {
     /// chat is dated by what was said in it, so this is the one thing that keeps a fork nobody has
     /// spoken in yet where it was born.
     var forkedAt: Date?
+    /// The schedule this conversation runs for, when a schedule made it.
+    var scheduleID: String? = nil
 }
 
 actor SessionStore {

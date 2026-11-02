@@ -40,6 +40,7 @@ for the route table and mapping rules before touching anything.
   exit.
 - `ReleaseInstall.swift` — how a prebuilt install (no checkout) finds a newer release, reads its
   notes and runs the installer it kept; answers `/update` in the checkout path's exact shape.
+- `Scheduler.swift` + `ScheduleRoutes.swift` — the schedules this machine keeps and asks, the same wire as claude-bridge's; `ScheduleHost` is what it needs of `App`, and `TurnEnds` is where every session says its turn ended.
 - `Pairing.swift` + `PairingCommand.swift` — `omp-bridge pair`: the link and QR the apps scan
   (`PairingKit` from CodingAgentKit owns the format).
 - `TranscriptLoader.swift` / `Discovery.swift` / `TranscriptSearch.swift` — omp transcript

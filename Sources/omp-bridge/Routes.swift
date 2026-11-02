@@ -4,7 +4,7 @@ import Hummingbird
 import NIOCore
 import ServiceLifecycle
 
-private func jsonResponse<T: Encodable>(_ value: T, status: HTTPResponse.Status = .ok) -> Response {
+func jsonResponse<T: Encodable>(_ value: T, status: HTTPResponse.Status = .ok) -> Response {
     let data = (try? WireCoding.encoder.encode(value)) ?? Data("{}".utf8)
     var buffer = ByteBuffer()
     buffer.writeBytes(data)
@@ -104,7 +104,7 @@ private func detachingAfter(
     await app.detachHub(id: id)
 }
 
-private func decodeBody<T: Decodable>(
+func decodeBody<T: Decodable>(
     _ type: T.Type, _ request: Request, limit: Int = 1 << 20
 ) async throws -> T {
     let buffer = try await request.body.collect(upTo: limit)
@@ -116,6 +116,8 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     // MARK: handshake
 
     router.get("health") { _, _ in "ok" }
+
+    registerScheduleRoutes(router, app: app)
 
     router.get("status") { _, _ in
         jsonResponse(await app.statusPayload())
@@ -163,6 +165,8 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
                 case .agents(let sessionID, let agents):
                     let payload = AgentsFramePayload(session: sessionID, agents: agents)
                     try await writeFrame(seq: frame.seq, event: "agents", json: encode(payload))
+                case .machine(let topic):
+                    try await writeFrame(seq: frame.seq, event: "machine", json: encode(["topic": topic]))
                 case .heartbeat(let seq):
                     try await writeFrame(
                         seq: nil, event: "heartbeat", json: encode(Heartbeat(seq: seq, t: Date())))

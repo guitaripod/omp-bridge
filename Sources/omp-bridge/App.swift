@@ -36,6 +36,8 @@ actor App {
     /// A model-written title lands without moving `updatedAt`, so the store has to be told about
     /// the name as well as the clock or the new title would live only until the next restart.
     private var lastStoredTitle: [String: String] = [:]
+    /// The schedules this machine keeps, made once the sessions are back.
+    private(set) var scheduler: Scheduler?
 
     init(config: Config) {
         self.config = config
@@ -57,6 +59,7 @@ actor App {
         }
         await restorePersistedSessions()
         await recoverInterruptedTurns()
+        await startScheduler()
         Task { [weak self] in await self?.backfillTitles() }
     }
 
@@ -315,7 +318,8 @@ actor App {
             interruption: interruptedBySession[session.id],
             autoResume: nil,
             ownedTranscriptIDs: ownedTranscriptIDs(for: session),
-            forkedAt: session.forkedAt)
+            forkedAt: session.forkedAt,
+            scheduleID: await session.scheduleID)
     }
 
     func flushAll() async {
@@ -359,6 +363,7 @@ actor App {
                 namedByHand: record.customTitle ?? false,
                 namedByModel: record.titledByModel ?? false)
             await session.adoptExternally(loaded: loaded, ompID: record.ompSessionID)
+            await session.setScheduleID(record.scheduleID)
             sessions[record.id] = session
             ownedTranscriptsBySession[record.id] = Set(await session.ownedTranscriptIDs())
             await session.announceRestoredQueue()
@@ -625,5 +630,47 @@ actor App {
             await session.shutdown()
         }
         await hub.closeAll()
+    }
+}
+
+extension App: ScheduleHost {
+    /// The schedules come back after the sessions do, so a catch-up run finds the conversation it
+    /// keeps; a quiet run's conversation is marked read on this machine's clock.
+    func startScheduler() async {
+        let scheduler = Scheduler(
+            url: URL(fileURLWithPath: config.stateDir).appendingPathComponent("schedules.json"),
+            store: self)
+        self.scheduler = scheduler
+        let hub = self.hub
+        await scheduler.observe { Task { await hub.publish(.machine(topic: "schedules")) } }
+        TurnEnds.shared.listen { [weak self] id, note in
+            await self?.scheduler?.turnEnded(id, note)
+            if note.quiet { await self?.markQuietRead(id) }
+        }
+        await scheduler.start()
+    }
+
+    private func markQuietRead(_ id: String) async {
+        let now = Date()
+        _ = await store.applyMarks(id, MarkChange(read: .seen, at: now), updatedAt: now, now: now)
+    }
+
+    func scheduledConversationExists(_ id: String) async -> Bool { sessions[id] != nil }
+
+    func makeScheduledConversation(
+        title: String, directory: String?, model: String?, effort: String?, scheduleID: String
+    ) async -> String {
+        let session = createSession(title: title, directory: directory, model: model, effort: effort)
+        await session.setScheduleID(scheduleID)
+        await session.rename(title)
+        await store.upsert(await record(for: session))
+        return session.id
+    }
+
+    func sendScheduled(_ id: String, text: String, model: String?, effort: String?, quiet: Bool) async
+        -> ScheduledSend
+    {
+        guard let session = sessions[id] else { return .failed("The conversation is gone.") }
+        return await session.sendScheduled(text: text, model: model, effort: effort, quiet: quiet)
     }
 }

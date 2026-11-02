@@ -165,6 +165,8 @@ struct SessionSummary: Codable, Sendable, Equatable {
     /// directly with `updatedAt`. A chat is unread when `updatedAt` is more than a second past it.
     /// Absent until some client has marked the chat.
     var readAt: Date?
+    /// A schedule made this conversation and runs into it.
+    var scheduled: Bool? = nil
 }
 
 struct SubagentSummary: Codable, Sendable, Equatable {
@@ -446,6 +448,8 @@ struct BridgeStatus: Encodable {
     /// here, not on the device that queued them), so a client can tell a bridge that holds one
     /// from an older bridge, whose queue only the sending device knows.
     var queue: Int
+    /// The protocol version of the schedules this machine keeps and asks (`/schedules`).
+    var schedules = 1
 }
 
 struct AgentCommandDTO: Codable, Sendable {

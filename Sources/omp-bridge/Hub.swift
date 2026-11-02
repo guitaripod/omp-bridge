@@ -5,6 +5,9 @@ enum HubEvent: Sendable {
     case listUpsert(SessionSummary)
     case listRemove(id: String)
     case agents(sessionID: String, agents: [SubagentSummary])
+    /// Something about the machine rather than one conversation changed — its schedules — and a
+    /// client showing that list should read it again.
+    case machine(topic: String)
     case heartbeat(seq: UInt64)
 }
 

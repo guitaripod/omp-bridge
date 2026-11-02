@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.10.0 — unreleased
+
+- Keeps schedules on the machine, in the shape claude-bridge serves them, so a question asked every morning is asked whether or not any app is open: `GET/POST /schedules`, `PATCH/DELETE /schedules/:id`, `POST /schedules/:id/run`. Runs go into one conversation that remembers by default; a run with nothing new is one plain line and leaves the chat read, while a failure always speaks; a machine that was off asks once for what it owed and records how many times it missed. `/status` reports `schedules`, `/stream` carries a `machine` frame when they change, and a conversation a schedule made is `scheduled: true` in a listing.
+
 ## 0.9.1 — 2026-10-25
 
 - The 0.9.0 release has no downloads, because its macOS build failed on the older Swift compiler the release machine uses; 0.9.1 has them for Linux and macOS, so a bridge installed from a release can update again. Nothing else changes.

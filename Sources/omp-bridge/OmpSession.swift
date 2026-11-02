@@ -150,7 +150,41 @@ actor OmpSession {
             createdAt: createdAt, updatedAt: updatedAt,
             active: (running || externallyLive) ? true : nil,
             interrupted: nil,
-            agents: activeAgentCount > 0 ? activeAgentCount : nil)
+            agents: activeAgentCount > 0 ? activeAgentCount : nil,
+            scheduled: scheduleID == nil ? nil : true)
+    }
+
+    /// The schedule this conversation runs for, when a schedule made it.
+    private(set) var scheduleID: String?
+    /// The open turn is a scheduled run allowed to stay quiet.
+    private var quietPending = false
+
+    func setScheduleID(_ value: String?) { scheduleID = value }
+
+    static func plainText(_ message: Message) -> String {
+        message.parts.compactMap { part -> String? in
+            if case .text(let value) = part { return value }
+            return nil
+        }.joined(separator: "\n")
+    }
+
+    /// Sends a scheduled run's prompt: the person's words are what the conversation keeps, and a
+    /// note to the model — stay quiet when nothing changed — rides only in what omp is handed. A
+    /// run that has to queue behind a live turn queues as the words alone.
+    func sendScheduled(text: String, model: String?, effort: String?, quiet: Bool) async
+        -> ScheduledSend
+    {
+        let quietHere = quiet && !busy
+        if quietHere { quietPending = true }
+        do {
+            let sent = try await send(
+                text: quietHere ? text + ScheduleWording.quietNote : text, displayText: text,
+                model: model, effort: effort)
+            return sent.queued ? .queued(position: sent.position ?? 0) : .started
+        } catch {
+            quietPending = false
+            return .failed(String(describing: error))
+        }
     }
 
     private var activeAgentCount: Int {
@@ -896,7 +930,22 @@ actor OmpSession {
         guard running else { return }
         running = false
         settleOwnTurn()
-        let unfinished = closeLiveMessage()
+        var unfinished = closeLiveMessage()
+        let answer = (unfinished ?? messages.last { $0.role == .assistant }).map(Self.plainText) ?? ""
+        let failed = cause == .processFailure || turnLastErrorMessage != nil
+        let quiet = quietPending && !failed && cause != .aborted
+            && ScheduleWording.saysNothingNew(answer)
+        quietPending = false
+        if quiet, let last = messages.lastIndex(where: { $0.role == .assistant }) {
+            messages[last].parts = [.text(ScheduleWording.nothingNewLine)]
+            if unfinished?.id == messages[last].id { unfinished = messages[last] }
+        }
+        TurnEnds.shared.tell(
+            id,
+            TurnEndNote(
+                answer: answer,
+                failure: failed ? (turnLastErrorMessage ?? "The turn failed.") : nil,
+                stopped: cause == .aborted, quiet: quiet))
         if let startedAt = turnStartedAt {
             let record = TurnRecord(
                 at: startedAt, seconds: Date().timeIntervalSince(startedAt), model: liveModel,
