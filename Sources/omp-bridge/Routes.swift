@@ -684,11 +684,13 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     router.post("sessions/:id/auto-resume") { request, context in
         do {
             let session = try await resolveSession(context)
-            guard let body = try? await decodeBody(AutoResumeRequest.self, request) else {
+            guard (try? await decodeBody(AutoResumeRequest.self, request)) != nil else {
                 return errorResponse("Expected {\"enabled\": true|false}", status: .badRequest)
             }
-            await session.setAutoResume(body.enabled)
-            return jsonResponse(["ok": true])
+            _ = session
+            return errorResponse(
+                "This bridge does not pick an interrupted turn back up by itself.",
+                status: .notImplemented)
         } catch { return sessionError(error) }
     }
 
