@@ -1182,7 +1182,10 @@ actor OmpSession {
         guard let requestID = frame["id"]?.stringValue else { return }
         let method = frame["method"]?.stringValue ?? ""
         switch method {
-        case "select", "confirm", "input":
+        case "cancel":
+            guard let target = frame["targetId"]?.stringValue, pendingUI?.requestID == target else { return }
+            settleUnansweredAsk()
+        case "select", "confirm", "input", "editor":
             let options = (frame["options"]?.arrayValue ?? []).compactMap(\.stringValue)
             let optionDetails = frame["optionDetails"]?.arrayValue
             var descriptions: [String] = []
