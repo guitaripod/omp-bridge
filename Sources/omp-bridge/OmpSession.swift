@@ -111,6 +111,8 @@ actor OmpSession {
     private var lastAgentsPublishAt = Date.distantPast
     /// The id the running turn's prompt was sent with, which its `prompt_result` repeats.
     private var turnRequestID: String?
+    /// The wait between attempts the running turn is in, if any.
+    private(set) var retryWait: RetryWait?
     private var knownCommands: [AgentCommandDTO] = []
     /// What the last turn left behind, for a caller that shows up after it is already over —
     /// `GET /sessions/:id/wait` reads this the moment it finds nothing running. Cleared by
@@ -669,6 +671,35 @@ actor OmpSession {
         }
     }
 
+    /// oh-my-pi's own retry of a failed request: the attempt, how long it waits, and the provider's
+    /// words for what failed.
+    private func beginRetry(_ frame: JSONValue) async {
+        guard running else { return }
+        let delay = frame["delayMs"]?.doubleValue
+        let wait = RetryWait(
+            attempt: max(1, frame["attempt"]?.intValue ?? 1),
+            maxRetries: frame["maxAttempts"]?.intValue,
+            reason: Self.firstLine(frame["errorMessage"]?.stringValue)
+                ?? "A request to the provider failed",
+            status: nil,
+            nextAttemptAt: delay.map { Date().addingTimeInterval(max(0, $0) / 1000) })
+        retryWait = wait
+        await publish(.retry(wait))
+    }
+
+    private func endRetry() async {
+        guard retryWait != nil else { return }
+        retryWait = nil
+        await publish(.retry(nil))
+    }
+
+    private static func firstLine(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : String(trimmed.prefix(300))
+    }
+
     private func syncState(from proc: OmpProcess) async {
         let state = await proc.request("get_state", timeout: 15)
         guard let data = state.data else { return }
@@ -996,6 +1027,8 @@ actor OmpSession {
         guard running else { return }
         running = false
         turnRequestID = nil
+        let waited = retryWait != nil
+        retryWait = nil
         settleOwnTurn()
         var unfinished = closeLiveMessage()
         let answer = (unfinished ?? messages.last { $0.role == .assistant }).map(Self.plainText) ?? ""
@@ -1029,6 +1062,7 @@ actor OmpSession {
         let settled = settleDanglingTools()
         autoTitleIfUnnamed()
         Task {
+            if waited { await publish(.retry(nil)) }
             if let unfinished { await publish(.messageUpserted(unfinished)) }
             for message in settled where message.id != unfinished?.id {
                 await publish(.messageUpserted(message))
@@ -1314,6 +1348,10 @@ actor OmpSession {
             await settlePrompt(frame)
         case "command_output":
             await appendCommandOutput(frame["text"]?.stringValue ?? "")
+        case "auto_retry_start":
+            await beginRetry(frame)
+        case "auto_retry_end":
+            await endRetry()
         case "agent_end":
             let terminal = frame["isTerminal"]?.boolValue ?? true
             if terminal {
@@ -1374,6 +1412,7 @@ actor OmpSession {
         guard let message = frame["message"], let role = message["role"]?.stringValue else { return }
         switch role {
         case "assistant":
+            await endRetry()
             await openLiveAnswer(model: TranscriptLoader.qualifiedModel(in: message) ?? liveModel)
         case "user", "toolResult":
             break

@@ -70,4 +70,51 @@ import Testing
         #expect(announced.first?.first?.active == true)
         #expect(announced.last?.first?.active == false)
     }
+
+    @Test func aRetryWaitOpensAndTheNextAnswerClosesIt() async throws {
+        let hub = Hub()
+        let session = makeSession(hub: hub)
+        await session.handleOmpEvent(.object(["type": .string("agent_start")]))
+        await session.handleOmpEvent(
+            .object([
+                "type": .string("auto_retry_start"), "attempt": .number(2), "maxAttempts": .number(5),
+                "delayMs": .number(30_000),
+                "errorMessage": .string("429 Too Many Requests\nretry-after: 30"),
+            ]))
+        let wait = try #require(await session.retryWait)
+        #expect(wait.attempt == 2)
+        #expect(wait.maxRetries == 5)
+        #expect(wait.reason == "429 Too Many Requests")
+        #expect(abs((wait.nextAttemptAt ?? .distantPast).timeIntervalSinceNow - 30) < 5)
+
+        await session.handleOmpEvent(
+            .object([
+                "type": .string("message_start"),
+                "message": .object(["role": .string("assistant")]),
+            ]))
+        #expect(await session.retryWait == nil)
+        let retries = await frames(hub).compactMap { event -> RetryWait?? in
+            if case .session(_, .retry(let wait)) = event { return .some(wait) }
+            return nil
+        }
+        #expect(retries.count == 2)
+        #expect(retries.first??.attempt == 2)
+        #expect(retries.last! == nil)
+    }
+
+    @Test func aRetryReportedWithNoTurnOpenIsIgnored() async {
+        let hub = Hub()
+        let session = makeSession(hub: hub)
+        await session.handleOmpEvent(
+            .object(["type": .string("auto_retry_start"), "attempt": .number(1), "errorMessage": .string("x")]))
+        #expect(await session.retryWait == nil)
+    }
+
+    @Test func theRetryFrameSpeaksClaudeBridgesShape() throws {
+        let wait = RetryWait(attempt: 1, maxRetries: 3, reason: "Overloaded", status: nil, nextAttemptAt: nil)
+        let object = try JSONSerialization.jsonObject(
+            with: WireCoding.encoder.encode(BridgeEvent.retry(wait))) as? [String: Any]
+        #expect(object?["type"] as? String == "retry")
+        #expect((object?["retry"] as? [String: Any])?["reason"] as? String == "Overloaded")
+    }
 }

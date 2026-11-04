@@ -784,7 +784,7 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
             lastTokens: lastTurn?.tokens.total, customTitle: await session.customTitleValue(),
             autoTitled: await session.autoTitledValue(), interruption: nil, autoResume: nil,
             active: running || externallyLive, turnOpen: running, queue: held.queue,
-            queuePaused: held.paused)
+            queuePaused: held.paused, retry: running ? await session.retryWait : nil)
     }
 
     @Sendable func resolveGitDirectory(_ request: Request, app: App) async -> String? {

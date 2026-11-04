@@ -125,12 +125,28 @@ struct Session: Codable, Sendable {
     /// order, and whether draining is held back after a Stop or a restart.
     var queue: [QueuedItem]?
     var queuePaused: Bool?
+    /// Stamped when a session is served: the open turn is waiting on its provider between
+    /// attempts, and why.
+    var retry: RetryWait? = nil
 
     var summary: SessionSummary {
         SessionSummary(
             id: id, title: title, directory: directory, model: model, effort: effort,
             createdAt: createdAt, updatedAt: updatedAt)
     }
+}
+
+/// A turn waiting on its provider between attempts: oh-my-pi retries a failed request by itself —
+/// a rate limit, an overloaded model, a usage window — and asks again at `nextAttemptAt`. Same
+/// field, same meaning as claude-bridge's, so the Kit reads both the same way.
+struct RetryWait: Codable, Sendable, Equatable {
+    /// The attempt that just failed, counting from one.
+    var attempt: Int
+    var maxRetries: Int?
+    /// What went wrong, in the provider's own words.
+    var reason: String
+    var status: Int?
+    var nextAttemptAt: Date?
 }
 
 /// `GET /sessions/:id/revision`: the bridge's record of one session in one small answer.
@@ -258,10 +274,14 @@ enum BridgeEvent: Codable, Sendable {
     /// The shared queue changed. Always the whole snapshot, so a client that missed an earlier
     /// frame is right again after any later one.
     case queue(QueueSnapshot)
+    /// The open turn started waiting on its provider between attempts, or — `nil` — an attempt is
+    /// answering again or the turn ended.
+    case retry(RetryWait?)
 
     private enum CodingKeys: String, CodingKey {
         case type, message, messageID, delta, tool, status, error, phase, interruption
         case queue, paused
+        case retry
     }
 
     func encode(to encoder: Encoder) throws {
@@ -295,6 +315,9 @@ enum BridgeEvent: Codable, Sendable {
             try c.encode("queue", forKey: .type)
             try c.encode(snapshot.queue, forKey: .queue)
             try c.encode(snapshot.paused, forKey: .paused)
+        case .retry(let wait):
+            try c.encode("retry", forKey: .type)
+            try c.encodeIfPresent(wait, forKey: .retry)
         }
     }
 
@@ -322,6 +345,7 @@ enum BridgeEvent: Codable, Sendable {
                 QueueSnapshot(
                     queue: try c.decodeIfPresent([QueuedItem].self, forKey: .queue) ?? [],
                     paused: try c.decodeIfPresent(Bool.self, forKey: .paused) ?? false))
+        case "retry": self = .retry(try c.decodeIfPresent(RetryWait.self, forKey: .retry))
         default: self = .error(try c.decode(String.self, forKey: .error))
         }
     }
