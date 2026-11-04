@@ -13,6 +13,25 @@ func jsonResponse<T: Encodable>(_ value: T, status: HTTPResponse.Status = .ok) -
     return Response(status: status, headers: headers, body: .init(byteBuffer: buffer))
 }
 
+/// An answer the client may already hold (see ``Validation``): tagged, and a 304 with no body when
+/// the request carries that tag.
+private func validatedJSONResponse<T: Encodable>(_ value: T, request: Request) -> Response {
+    guard let data = try? WireCoding.encoder.encode(value) else { return jsonResponse(value) }
+    var headers = HTTPFields()
+    headers[.cacheControl] = "no-cache"
+    switch Validation.reply(body: data, ifNoneMatch: request.headers[.ifNoneMatch]) {
+    case .unchanged(let tag):
+        headers[.eTag] = tag
+        return Response(status: .notModified, headers: headers)
+    case .full(let body, let tag):
+        headers[.eTag] = tag
+        headers[.contentType] = "application/json"
+        var buffer = ByteBuffer()
+        buffer.writeBytes(body)
+        return Response(status: .ok, headers: headers, body: .init(byteBuffer: buffer))
+    }
+}
+
 private func errorResponse(_ message: String, status: HTTPResponse.Status) -> Response {
     let data = (try? WireCoding.encoder.encode(["error": message])) ?? Data("{}".utf8)
     var buffer = ByteBuffer()
@@ -262,10 +281,10 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
 
     // MARK: sessions
 
-    router.get("sessions") { _, _ in
+    router.get("sessions") { request, _ in
         let summaries = Array((await app.currentSummaries()).values)
-            .sorted { $0.updatedAt > $1.updatedAt }
-        return jsonResponse(summaries)
+            .sorted { ($0.updatedAt, $0.id) > ($1.updatedAt, $1.id) }
+        return validatedJSONResponse(summaries, request: request)
     }
 
     router.post("sessions") { request, _ in
@@ -434,10 +453,10 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         }
     }
 
-    router.get("sessions/:id") { _, context in
+    router.get("sessions/:id") { request, context in
         do {
             let session = try await resolveSession(context)
-            return jsonResponse(await sessionSnapshot(session))
+            return validatedJSONResponse(await sessionSnapshot(session), request: request)
         } catch { return sessionError(error) }
     }
 

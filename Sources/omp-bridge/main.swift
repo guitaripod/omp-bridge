@@ -63,6 +63,7 @@ let router = Router()
 if !config.password.isEmpty {
     router.middlewares.add(BasicAuthMiddleware(password: config.password))
 }
+router.middlewares.add(AnswerCompression<BasicRequestContext>())
 await registerRoutes(router, app: app, config: config)
 
 Task { await app.runObserver() }
