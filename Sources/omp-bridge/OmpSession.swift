@@ -15,7 +15,11 @@ struct SubagentState: Sendable {
     var title: String?
     var active: Bool
     var updatedAt: Date
-    var lastNote: String?
+    var agentType: String?
+    var toolUseID: String?
+    var startedAt: Date?
+    var toolCount: Int?
+    var currentTool: String?
 }
 
 enum LivePart {
@@ -104,6 +108,7 @@ actor OmpSession {
 
     private var pendingUI: PendingUI?
     private var subagents: [String: SubagentState] = [:]
+    private var lastAgentsPublishAt = Date.distantPast
     private var knownCommands: [AgentCommandDTO] = []
     /// What the last turn left behind, for a caller that shows up after it is already over —
     /// `GET /sessions/:id/wait` reads this the moment it finds nothing running. Cleared by
@@ -347,11 +352,12 @@ actor OmpSession {
     func subagentSummaries() -> [SubagentSummary] {
         subagents.values.map { state in
             SubagentSummary(
-                id: state.id, title: state.title ?? "agent", agentType: nil, toolUseID: nil,
-                updatedAt: state.updatedAt, active: state.active, completed: !state.active,
-                startedAt: nil, toolCount: nil, currentTool: state.lastNote)
+                id: state.id, title: state.title ?? "agent", agentType: state.agentType,
+                toolUseID: state.toolUseID, updatedAt: state.updatedAt, active: state.active,
+                completed: !state.active, startedAt: state.startedAt, toolCount: state.toolCount,
+                currentTool: state.currentTool)
         }
-        .sorted { $0.updatedAt > $1.updatedAt }
+        .sorted { ($0.updatedAt, $0.id) > ($1.updatedAt, $1.id) }
     }
 
     func subagentTranscript(agentID: String) -> SubagentTranscript? {
@@ -388,7 +394,11 @@ actor OmpSession {
         if !effort.isEmpty {
             _ = await proc.request("set_thinking_level", fields: ["level": effort])
         }
-        Task { await proc.request("set_subagent_subscription", fields: ["level": "events"]) }
+        Task {
+            await proc.request("set_subagent_subscription", fields: ["level": "progress"])
+            await proc.request(
+                "set_event_filter", fields: ["events": NSNull(), "messageUpdates": "delta"])
+        }
         return proc
     }
 
@@ -1241,8 +1251,8 @@ actor OmpSession {
             break
         case "available_commands_update":
             knownCommands = CommandCatalog.parse(frame["commands"]?.arrayValue ?? [])
-        case "subagent_lifecycle", "subagent_progress", "subagent_event":
-            recordSubagentFrame(frame, type: type)
+        case "subagent_lifecycle", "subagent_progress":
+            await recordSubagentFrame(frame, type: type)
         case "agent_end":
             let terminal = frame["isTerminal"]?.boolValue ?? true
             if terminal {
@@ -1253,24 +1263,51 @@ actor OmpSession {
         }
     }
 
-    private func recordSubagentFrame(_ frame: JSONValue, type: String) {
-        guard let agentID = frame["subagentId"]?.stringValue ?? frame["id"]?.stringValue else { return }
-        var state = subagents[agentID] ?? SubagentState(id: agentID, title: nil, active: true, updatedAt: Date(), lastNote: nil)
-        if let description = frame["description"]?.stringValue ?? frame["task"]?.stringValue {
+    /// oh-my-pi's word on a sub-agent, which lives under `payload`: a lifecycle frame when one
+    /// starts or ends, and a progress frame — keyed by the same id inside `progress` — whenever its
+    /// tool count or current tool moves. Reading the frame's top level, as this once did, found
+    /// nothing and left every omp chat with no agents at all.
+    private func recordSubagentFrame(_ frame: JSONValue, type: String) async {
+        guard let payload = frame["payload"] else { return }
+        let progress = payload["progress"]
+        guard let agentID = payload["id"]?.stringValue ?? progress?["id"]?.stringValue else { return }
+        let now = Date()
+        let known = subagents[agentID]
+        var state = known ?? SubagentState(id: agentID, title: nil, active: true, updatedAt: now)
+        state.agentType = payload["agent"]?.stringValue ?? state.agentType
+        state.toolUseID = payload["parentToolCallId"]?.stringValue ?? state.toolUseID
+        if let description = payload["description"]?.stringValue ?? progress?["description"]?.stringValue
+            ?? payload["task"]?.stringValue, !description.isEmpty
+        {
             state.title = description
         }
-        if type == "subagent_progress", let note = frame["note"]?.stringValue ?? frame["status"]?.stringValue {
-            state.lastNote = note
+        let status = (type == "subagent_lifecycle" ? payload["status"] : progress?["status"])?.stringValue
+        switch status {
+        case "completed", "failed", "aborted":
+            state.active = false
+            state.currentTool = nil
+        case "started", "running", "pending":
+            state.active = true
+        default:
+            break
         }
-        if type == "subagent_lifecycle" {
-            let phase = frame["phase"]?.stringValue ?? frame["status"]?.stringValue ?? ""
-            if ["completed", "failed", "cancelled", "done", "stopped"].contains(phase) {
-                state.active = false
+        if state.startedAt == nil { state.startedAt = now }
+        if let progress {
+            state.toolCount = progress["toolCount"]?.intValue ?? state.toolCount
+            if state.active {
+                state.currentTool = progress["currentTool"]?.stringValue ?? progress["lastIntent"]?.stringValue
             }
         }
-        state.updatedAt = Date()
+        state.updatedAt = now
         subagents[agentID] = state
+        let lifecycleMoved = known?.active != state.active
+        guard lifecycleMoved || now.timeIntervalSince(lastAgentsPublishAt) >= Self.agentsFrameGap else { return }
+        lastAgentsPublishAt = now
+        await hub.publish(.agents(sessionID: id, agents: subagentSummaries()))
     }
+
+    /// How often a working sub-agent's progress is passed on. A start or an end goes at once.
+    private static let agentsFrameGap: TimeInterval = 1
 
     private func handleMessageStart(_ frame: JSONValue) async {
         guard let message = frame["message"], let role = message["role"]?.stringValue else { return }
