@@ -738,7 +738,8 @@ actor OmpSession {
 
     func clear() throws {
         guard !running, queue.isEmpty else {
-            throw BridgeError.conflict("A turn is running or queued")
+            throw BridgeError.conflict(
+                "This session has a turn running. Stop it first, or fork to start clean without interrupting it.")
         }
         messages.removeAll()
         turns.removeAll()
@@ -1676,7 +1677,6 @@ actor OmpSession {
         return String(output.prefix(outputHead)) + "\n… \(elided) characters left out …\n"
             + String(output.suffix(tail))
     }
-
 
     private func handleExecutionEnd(_ frame: JSONValue) async {
         guard let toolCallID = frame["toolCallId"]?.stringValue else { return }

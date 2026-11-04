@@ -125,6 +125,8 @@ struct Session: Codable, Sendable {
     /// order, and whether draining is held back after a Stop or a restart.
     var queue: [QueuedItem]?
     var queuePaused: Bool?
+    /// The schedule this conversation runs for, when a schedule made it.
+    var scheduleID: String? = nil
     /// Stamped when a session is served: the open turn is waiting on its provider between
     /// attempts, and why.
     var retry: RetryWait? = nil
@@ -132,7 +134,7 @@ struct Session: Codable, Sendable {
     var summary: SessionSummary {
         SessionSummary(
             id: id, title: title, directory: directory, model: model, effort: effort,
-            createdAt: createdAt, updatedAt: updatedAt)
+            createdAt: createdAt, updatedAt: updatedAt, scheduled: scheduleID == nil ? nil : true)
     }
 }
 
@@ -474,6 +476,16 @@ struct BridgeStatus: Encodable {
     var queue: Int
     /// The protocol version of the schedules this machine keeps and asks (`/schedules`).
     var schedules = 1
+    /// The protocol version of the session read's sidecar: `GET /sessions/:id` answers the cut-off
+    /// turn and the provider wait as the whole word on each, in claude-bridge's shape.
+    var detail = 1
+    /// How a request got past the door, in claude-bridge's shape. This bridge has one door, the
+    /// password, so it always says so.
+    var access = StatusAccess()
+}
+
+struct StatusAccess: Encodable, Sendable {
+    var mode = "password"
 }
 
 struct AgentCommandDTO: Codable, Sendable {

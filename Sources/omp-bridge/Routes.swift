@@ -563,6 +563,11 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         do {
             let session = try await resolveSession(context)
             let result = await session.abort()
+            guard result.stopped || result.paused else {
+                return errorResponse(
+                    "Nothing to stop from here — this session is running on the server, not from this app.",
+                    status: .conflict)
+            }
             return jsonResponse(
                 AbortResultDTO(stopped: result.stopped, discarded: 0, paused: result.paused))
         } catch { return sessionError(error) }
@@ -676,10 +681,13 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
             status: .conflict)
     }
 
-    router.post("sessions/:id/auto-resume") { _, context in
+    router.post("sessions/:id/auto-resume") { request, context in
         do {
             let session = try await resolveSession(context)
-            await session.setAutoResume(true)
+            guard let body = try? await decodeBody(AutoResumeRequest.self, request) else {
+                return errorResponse("Expected {\"enabled\": true|false}", status: .badRequest)
+            }
+            await session.setAutoResume(body.enabled)
             return jsonResponse(["ok": true])
         } catch { return sessionError(error) }
     }
@@ -782,9 +790,11 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
             createdAt: await session.createdDate(), updatedAt: await session.updatedDate(),
             messages: messages, lastCostUSD: lastTurn?.costUSD,
             lastTokens: lastTurn?.tokens.total, customTitle: await session.customTitleValue(),
-            autoTitled: await session.autoTitledValue(), interruption: nil, autoResume: nil,
+            autoTitled: await session.autoTitledValue(),
+            interruption: await app.interruption(for: session.id), autoResume: nil,
             active: running || externallyLive, turnOpen: running, queue: held.queue,
-            queuePaused: held.paused, retry: running ? await session.retryWait : nil)
+            queuePaused: held.paused, scheduleID: await session.scheduleID,
+            retry: running ? await session.retryWait : nil)
     }
 
     @Sendable func resolveGitDirectory(_ request: Request, app: App) async -> String? {
