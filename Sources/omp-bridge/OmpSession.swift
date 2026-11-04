@@ -1344,7 +1344,9 @@ actor OmpSession {
         case "extension_ui_request":
             await handleUIRequest(frame)
         case "notice":
-            break
+            if frame["level"]?.stringValue == "error", let message = frame["message"]?.stringValue {
+                await publish(.error(message))
+            }
         case "available_commands_update":
             knownCommands = CommandCatalog.parse(frame["commands"]?.arrayValue ?? [])
         case "subagent_lifecycle", "subagent_progress":
@@ -1357,6 +1359,11 @@ actor OmpSession {
             await beginRetry(frame)
         case "auto_retry_end":
             await endRetry()
+        case "config_update":
+            if let model = Self.qualifiedModel(inState: frame), !model.isEmpty { self.model = model }
+            if let level = frame["thinkingLevel"]?.stringValue { effort = level }
+        case "thinking_level_changed":
+            if let level = frame["thinkingLevel"]?.stringValue { effort = level }
         case "agent_end":
             let terminal = frame["isTerminal"]?.boolValue ?? true
             if terminal {
