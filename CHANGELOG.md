@@ -4,6 +4,18 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## Unreleased
+
+- Sub-agents show up. Every field of oh-my-pi's sub-agent frames was read from the wrong level, so no omp chat ever listed an agent; each now carries its kind, the call that started it, its tool count and current tool, and starts, ends and progress reach the app on the stream as they happen.
+- A turn closes the moment oh-my-pi says it ended — completed, stopped or failed with the provider's words — instead of after twenty quiet seconds, and a slash command the engine answers itself closes at once with what it printed as the reply.
+- A turn waiting on its provider between attempts says so: a `retry` frame with the attempt, the provider's reason and when it tries next, as claude-bridge sends it.
+- A long tool output keeps its start and its end rather than only its first 10 KB, and a running command's output goes out at most four times a second.
+- "Other (type your own)" in a question works instead of freezing the turn, and an ask the engine withdraws closes.
+- Error notices from the engine reach the chat, and a model or thinking level the engine switches to by itself reaches the model chip.
+- Answers that are whole documents are gzipped, and the session list and every session read are tagged so an unchanged one is answered 304.
+- Wire parity with claude-bridge: Stop with nothing to stop answers 409, `/status` carries `access` and `detail`, and the session read carries `scheduleID`, the cut-off turn and the provider wait.
+- Asks the engine only for what it reads: sub-agents at progress level and message updates as deltas.
+
 ## 0.10.0 — 2026-11-03
 
 - Keeps schedules on the machine, in the shape claude-bridge serves them, so a question asked every morning is asked whether or not any app is open: `GET/POST /schedules`, `PATCH/DELETE /schedules/:id`, `POST /schedules/:id/run`. Runs go into one conversation that remembers by default; a run with nothing new is one plain line and leaves the chat read, while a failure always speaks; a machine that was off asks once for what it owed and records how many times it missed. `/status` reports `schedules`, `/stream` carries a `machine` frame when they change, and a conversation a schedule made is `scheduled: true` in a listing.
