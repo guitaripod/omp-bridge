@@ -1427,8 +1427,29 @@ actor OmpSession {
         state.updatedAt = now
         subagents[agentID] = state
         let lifecycleMoved = known?.active != state.active
-        guard lifecycleMoved || now.timeIntervalSince(lastAgentsPublishAt) >= Self.agentsFrameGap else { return }
-        lastAgentsPublishAt = now
+        let waited = now.timeIntervalSince(lastAgentsPublishAt)
+        guard lifecycleMoved || waited >= Self.agentsFrameGap else {
+            scheduleAgentsFrame(after: Self.agentsFrameGap - waited)
+            return
+        }
+        await publishAgents()
+    }
+
+    /// A change held back by the one-a-second gate still goes out when the gap is up: the engine
+    /// reports progress only when something happens, so a held frame might otherwise be the last
+    /// word on an agent for as long as its next tool runs.
+    private func scheduleAgentsFrame(after delay: TimeInterval) {
+        guard agentsPublishTask == nil else { return }
+        agentsPublishTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, delay)))
+            await self?.publishAgents()
+        }
+    }
+
+    private func publishAgents() async {
+        agentsPublishTask?.cancel()
+        agentsPublishTask = nil
+        lastAgentsPublishAt = Date()
         await hub.publish(.agents(sessionID: id, agents: subagentSummaries()))
     }
 

@@ -71,6 +71,31 @@ import Testing
         #expect(announced.last?.first?.active == false)
     }
 
+    @Test func progressHeldBackByTheGateStillGoesOut() async throws {
+        let hub = Hub()
+        let session = makeSession(hub: hub)
+        await session.handleOmpEvent(lifecycle("sa-2", "started"))
+        await session.handleOmpEvent(
+            .object([
+                "type": .string("subagent_progress"),
+                "payload": .object([
+                    "index": .number(0), "agent": .string("explore"), "task": .string("Map the parser"),
+                    "progress": .object([
+                        "id": .string("sa-2"), "status": .string("running"),
+                        "toolCount": .number(7), "currentTool": .string("bash"),
+                    ]),
+                ]),
+            ]))
+        try await Task.sleep(for: .milliseconds(1500))
+        let announced = await frames(hub).compactMap { event -> [SubagentSummary]? in
+            if case .agents(_, let agents) = event { return agents }
+            return nil
+        }
+        #expect(announced.count == 2)
+        #expect(announced.last?.first?.toolCount == 7)
+        #expect(announced.last?.first?.currentTool == "bash")
+    }
+
     @Test func aRetryWaitOpensAndTheNextAnswerClosesIt() async throws {
         let hub = Hub()
         let session = makeSession(hub: hub)
