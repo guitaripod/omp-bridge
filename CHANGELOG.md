@@ -4,7 +4,7 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
-## Unreleased
+## 0.11.0 — 2026-11-04
 
 - Sub-agents show up. Every field of oh-my-pi's sub-agent frames was read from the wrong level, so no omp chat ever listed an agent; each now carries its kind, the call that started it, its tool count and current tool, and starts, ends and progress reach the app on the stream as they happen.
 - A turn closes the moment oh-my-pi says it ended — completed, stopped or failed with the provider's words — instead of after twenty quiet seconds, and a slash command the engine answers itself closes at once with what it printed as the reply.
@@ -14,6 +14,8 @@ listed here above the version a machine is running.
 - Error notices from the engine reach the chat, and a model or thinking level the engine switches to by itself reaches the model chip.
 - Answers that are whole documents are gzipped, and the session list and every session read are tagged so an unchanged one is answered 304.
 - Wire parity with claude-bridge: Stop with nothing to stop answers 409, `/status` carries `access` and `detail`, and the session read carries `scheduleID`, the cut-off turn and the provider wait.
+- A prompt whose run yielded to background work keeps its turn open until the engine says the session settled, and an answer a slash command printed before starting a run of its own is kept.
+- Reads each engine's output on a thread of its own, so many omp chats at once can no longer starve the bridge.
 - Asks the engine only for what it reads: sub-agents at progress level and message updates as deltas.
 
 ## 0.10.0 — 2026-11-03
