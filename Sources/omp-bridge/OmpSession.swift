@@ -111,6 +111,10 @@ actor OmpSession {
     private var lastAgentsPublishAt = Date.distantPast
     /// The id the running turn's prompt was sent with, which its `prompt_result` repeats.
     private var turnRequestID: String?
+    /// The prompt's result said its run yielded to background work, so the turn closes on the
+    /// engine's `session_settled` rather than on the result.
+    private var awaitingSettle = false
+    private var agentsPublishTask: Task<Void, Never>?
     /// The wait between attempts the running turn is in, if any.
     private(set) var retryWait: RetryWait?
     private var toolPublishedAt: [String: Date] = [:]
@@ -655,12 +659,16 @@ actor OmpSession {
     /// The terminal word on a prompt, sent once after everything the prompt caused has settled. A
     /// turn the engine ended without a terminal `agent_end` — an abort for a manual compaction, a
     /// failure before the model was reached — is closed here at once instead of after the silence
-    /// healer's twenty seconds and two probes.
+    /// healer's twenty seconds and two probes. A prompt whose run yielded to background work it
+    /// started (`sessionSettled: false`) is not over: the work will wake the engine again, and the
+    /// turn stays open until the engine says the session has settled.
     private func settlePrompt(_ frame: JSONValue) async {
         guard running, let id = frame["id"]?.stringValue, id == turnRequestID else { return }
         switch frame["status"]?.stringValue {
         case "aborted":
             finishTurn(cause: .aborted)
+        case "completed" where frame["sessionSettled"]?.boolValue == false:
+            awaitingSettle = true
         case "error":
             let error = frame["error"]?["message"]?.stringValue
                 ?? "The turn failed."
@@ -1029,6 +1037,7 @@ actor OmpSession {
         guard running else { return }
         running = false
         turnRequestID = nil
+        awaitingSettle = false
         toolPublishedAt = [:]
         let waited = retryWait != nil
         retryWait = nil
@@ -1354,6 +1363,8 @@ actor OmpSession {
             await recordSubagentFrame(frame, type: type)
         case "prompt_result":
             await settlePrompt(frame)
+        case "session_settled":
+            if running, awaitingSettle { finishTurn() }
         case "command_output":
             await appendCommandOutput(frame["text"]?.stringValue ?? "")
         case "auto_retry_start":

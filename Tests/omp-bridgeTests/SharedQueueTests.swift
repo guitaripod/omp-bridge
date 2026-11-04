@@ -37,6 +37,16 @@ private struct FakeOmp {
             defaultEffort: "medium", titleModel: nil, waitMax: 10800)
     }
 
+    /// The id each prompt request was sent with, in order.
+    func promptIDs() -> [String] {
+        let text = (try? String(contentsOfFile: requestLog, encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").compactMap { line -> String? in
+            guard line.contains("\"type\":\"prompt\"") else { return nil }
+            let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            return object?["id"] as? String
+        }
+    }
+
     func prompts() -> [String] {
         let text = (try? String(contentsOfFile: requestLog, encoding: .utf8)) ?? ""
         return text.split(separator: "\n").compactMap { line -> String? in
@@ -132,6 +142,49 @@ private func sessionEvents(_ hub: Hub) async -> [BridgeEvent] {
         #expect(await session.queueSnapshot().queue.isEmpty)
         try await until(.seconds(5)) { fake.prompts().count == 2 }
         #expect(fake.prompts() == ["first", "second"])
+    }
+
+    @Test func aPromptThatYieldedToBackgroundWorkStaysOpenUntilTheSessionSettles() async throws {
+        let fake = try FakeOmp()
+        defer { fake.cleanUp() }
+        let session = makeSession(fake)
+        _ = await session.enqueue(item("a", "start the build in the background"))
+        _ = await session.enqueue(item("b", "next"))
+        try await until(.seconds(3)) { fake.promptIDs().count == 1 }
+        let id = try #require(fake.promptIDs().first)
+
+        await session.handleOmpEvent(
+            .object([
+                "type": .string("prompt_result"), "id": .string(id), "agentInvoked": .bool(true),
+                "status": .string("completed"), "sessionSettled": .bool(false),
+            ]))
+        #expect(await session.isRunningValue())
+        #expect(fake.prompts().count == 1)
+
+        await session.handleOmpEvent(.object(["type": .string("session_settled")]))
+        #expect(await session.isRunningValue() == false || fake.prompts().count == 2)
+        try await until(.seconds(5)) { fake.prompts().count == 2 }
+        #expect(fake.prompts() == ["start the build in the background", "next"])
+    }
+
+    @Test func aPromptResultForAnEarlierPromptLeavesTheNextTurnAlone() async throws {
+        let fake = try FakeOmp()
+        defer { fake.cleanUp() }
+        let session = makeSession(fake)
+        _ = await session.enqueue(item("a", "first"))
+        _ = await session.enqueue(item("b", "second"))
+        try await until(.seconds(3)) { fake.promptIDs().count == 1 }
+        let first = try #require(fake.promptIDs().first)
+        await endTurn(session)
+        try await until(.seconds(5)) { fake.promptIDs().count == 2 }
+
+        await session.handleOmpEvent(
+            .object([
+                "type": .string("prompt_result"), "id": .string(first), "agentInvoked": .bool(true),
+                "status": .string("completed"), "sessionSettled": .bool(true),
+            ]))
+
+        #expect(await session.isRunningValue())
     }
 
     @Test func enqueueingTheSameIdAgainChangesNothing() async throws {
