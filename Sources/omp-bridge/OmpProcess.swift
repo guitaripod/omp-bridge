@@ -159,10 +159,10 @@ actor OmpProcess {
         process = p
         stdinHandle = inPipe.fileHandleForWriting
         isRunning = true
-        let reader = LineReader(handle: outPipe.fileHandleForReading)
+        let lines = LineReader(handle: outPipe.fileHandleForReading).lines()
         let channel = self
         Task.detached(priority: .userInitiated) { [weak channel] in
-            while let line = reader.nextLine() {
+            for await line in lines {
                 guard !line.isEmpty, let data = line.data(using: .utf8),
                     let obj = try? JSONSerialization.jsonObject(with: data)
                 else { continue }
@@ -350,6 +350,19 @@ final class LineReader: @unchecked Sendable {
 
     init(handle: FileHandle) {
         self.handle = handle
+    }
+
+    /// Every line the handle carries, read on a thread of its own. A read blocks until the engine
+    /// writes, and a blocked read on Swift's shared pool holds one of its few threads for the life
+    /// of the engine: with as many engines as the machine has cores, nothing else in the bridge
+    /// could run at all.
+    func lines() -> AsyncStream<String> {
+        AsyncStream { continuation in
+            Thread.detachNewThread {
+                while let line = self.nextLine() { continuation.yield(line) }
+                continuation.finish()
+            }
+        }
     }
 
     func nextLine() -> String? {
