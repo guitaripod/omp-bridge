@@ -1316,7 +1316,10 @@ actor OmpSession {
                 finishTurn(cause: .processFailure)
             }
         case "agent_start":
-            running = true
+            if !running {
+                running = true
+                await quietRegistry.increment()
+            }
             if turnStartedAt == nil { turnStartedAt = Date() }
         case "turn_start":
             turnCalls += 1
