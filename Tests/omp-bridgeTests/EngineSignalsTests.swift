@@ -110,6 +110,16 @@ import Testing
         #expect(await session.retryWait == nil)
     }
 
+    @Test func longOutputKeepsItsStartAndItsEnd() {
+        let output = String(repeating: "a", count: 6_000) + String(repeating: "b", count: 20_000) + "VERDICT"
+        let bounded = OmpSession.boundedOutput(output)
+        #expect(bounded.hasPrefix("aaaa"))
+        #expect(bounded.hasSuffix("VERDICT"))
+        #expect(bounded.contains("16007 characters left out"))
+        #expect(bounded.count < 10_100)
+        #expect(OmpSession.boundedOutput("short") == "short")
+    }
+
     @Test func theRetryFrameSpeaksClaudeBridgesShape() throws {
         let wait = RetryWait(attempt: 1, maxRetries: 3, reason: "Overloaded", status: nil, nextAttemptAt: nil)
         let object = try JSONSerialization.jsonObject(

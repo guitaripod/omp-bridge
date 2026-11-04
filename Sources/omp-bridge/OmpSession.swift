@@ -113,6 +113,7 @@ actor OmpSession {
     private var turnRequestID: String?
     /// The wait between attempts the running turn is in, if any.
     private(set) var retryWait: RetryWait?
+    private var toolPublishedAt: [String: Date] = [:]
     private var knownCommands: [AgentCommandDTO] = []
     /// What the last turn left behind, for a caller that shows up after it is already over —
     /// `GET /sessions/:id/wait` reads this the moment it finds nothing running. Cleared by
@@ -1027,6 +1028,7 @@ actor OmpSession {
         guard running else { return }
         running = false
         turnRequestID = nil
+        toolPublishedAt = [:]
         let waited = retryWait != nil
         retryWait = nil
         settleOwnTurn()
@@ -1638,13 +1640,33 @@ actor OmpSession {
             $0["text"]?.stringValue
         }
         let output = texts.joined()
-        if let seat = seatOfToolPart(toolCallID) {
-            mutateToolPart(seat) { tool in
-                tool.output = String(output.prefix(10_000))
-            }
-            await publishTool(seat)
+        guard let seat = seatOfToolPart(toolCallID) else { return }
+        mutateToolPart(seat) { tool in
+            tool.output = Self.boundedOutput(output)
         }
+        let now = Date()
+        guard now.timeIntervalSince(toolPublishedAt[toolCallID] ?? .distantPast) >= Self.toolOutputGap
+        else { return }
+        toolPublishedAt[toolCallID] = now
+        await publishTool(seat)
     }
+
+    /// How often a running tool's growing output is sent on. The end of the call always goes.
+    private static let toolOutputGap: TimeInterval = 0.25
+    private static let outputLimit = 10_000
+    private static let outputHead = 4_000
+
+    /// A tool's output cut to what a card can hold: its start, which says what ran, and its end,
+    /// which says how it went — a build's errors, a test run's verdict. Keeping only the start
+    /// froze a long command's live output at its first screen and dropped every final result's tail.
+    static func boundedOutput(_ output: String) -> String {
+        guard output.count > outputLimit else { return output }
+        let tail = outputLimit - outputHead
+        let elided = output.count - outputLimit
+        return String(output.prefix(outputHead)) + "\n… \(elided) characters left out …\n"
+            + String(output.suffix(tail))
+    }
+
 
     private func handleExecutionEnd(_ frame: JSONValue) async {
         guard let toolCallID = frame["toolCallId"]?.stringValue else { return }
@@ -1657,9 +1679,10 @@ actor OmpSession {
             }.joined()
         }
         guard let seat = seatOfToolPart(toolCallID) else { return }
+        toolPublishedAt[toolCallID] = nil
         mutateToolPart(seat) { tool in
             tool.status = isError ? .error : .completed
-            tool.output = String(output.prefix(10_000))
+            tool.output = Self.boundedOutput(output)
         }
         await publishTool(seat)
         let attached = attachResultFiles(frame, toolCallID: toolCallID)
