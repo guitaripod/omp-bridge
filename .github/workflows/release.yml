@@ -33,7 +33,7 @@ jobs:
             dist/*.sha256
 
   package-macos:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - name: Check the tag is the version in CHANGELOG.md
