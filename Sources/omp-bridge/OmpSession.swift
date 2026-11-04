@@ -1515,7 +1515,12 @@ actor OmpSession {
         }
     }
 
+    /// A new answer. One still open — what a slash command printed before it started a model run
+    /// of its own — is closed first, so it lands in the transcript instead of being dropped.
     private func openLiveAnswer(model: String?) async {
+        if liveMessageID != nil, let closed = closeLiveMessage() {
+            await publish(.messageUpserted(closed))
+        }
         liveMessageID = "a-\(UUID().uuidString.prefix(8))"
         liveCreatedAt = Date()
         liveParts = []
