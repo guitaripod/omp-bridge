@@ -306,11 +306,18 @@ actor OmpProcess {
         sendRaw(object)
     }
 
-    func request(
-        _ type: String, fields: [String: any Sendable] = [:], timeout: TimeInterval = 30
-    ) async -> OmpRPCResponse {
+    /// An id for a request the caller wants to recognise later: a prompt's `prompt_result` arrives
+    /// as a frame of its own carrying the id the prompt was sent with.
+    func reserveRequestID() -> String {
         nextRequestID += 1
-        let id = "req-\(nextRequestID)"
+        return "req-\(nextRequestID)"
+    }
+
+    func request(
+        _ type: String, fields: [String: any Sendable] = [:], timeout: TimeInterval = 30,
+        id reserved: String? = nil
+    ) async -> OmpRPCResponse {
+        let id = reserved ?? reserveRequestID()
         var object: [String: Any] = ["id": id, "type": type]
         for (key, value) in fields { object[key] = value }
         guard isRunning, sendRaw(object) else {

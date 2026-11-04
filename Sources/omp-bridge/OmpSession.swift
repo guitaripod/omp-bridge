@@ -109,6 +109,8 @@ actor OmpSession {
     private var pendingUI: PendingUI?
     private var subagents: [String: SubagentState] = [:]
     private var lastAgentsPublishAt = Date.distantPast
+    /// The id the running turn's prompt was sent with, which its `prompt_result` repeats.
+    private var turnRequestID: String?
     private var knownCommands: [AgentCommandDTO] = []
     /// What the last turn left behind, for a caller that shows up after it is already over —
     /// `GET /sessions/:id/wait` reads this the moment it finds nothing running. Cleared by
@@ -604,13 +606,67 @@ actor OmpSession {
                 turnID: "t-\(UUID().uuidString.prefix(8))", sessionID: id,
                 ompSessionFile: ompSessionFile, prompt: display, startedAt: Date(),
                 pid: await proc.processID))
-        let response = await proc.request("prompt", fields: ["message": prompt])
+        let requestID = await proc.reserveRequestID()
+        turnRequestID = requestID
+        let response = await proc.request("prompt", fields: ["message": prompt], id: requestID)
         if !response.success, response.errorCode != "timeout", running {
             await publish(.error(response.error ?? "The prompt was refused"))
             finishTurn()
             return
         }
+        if response.data?["agentInvoked"]?.boolValue == false, running, turnRequestID == requestID {
+            finishLocalCommand()
+        }
         await syncState(from: proc)
+    }
+
+    /// A slash command oh-my-pi answered by itself, without the model: it says so in the prompt's
+    /// acknowledgement and sends no `prompt_result` and no `agent_end`, so nothing else would ever
+    /// close the turn — it sat open until the silence healer gave up on it. What the command
+    /// printed is already in the live message; it is closed as the answer and not counted as a
+    /// model turn.
+    private func finishLocalCommand() {
+        turnStartedAt = nil
+        finishTurn()
+    }
+
+    /// Text a local slash command printed. It lands in the open turn's answer the way the model's
+    /// words would, so `/help` or `/usage` reads as a reply rather than as a turn that said nothing.
+    private func appendCommandOutput(_ text: String) async {
+        guard running, !text.isEmpty else { return }
+        if liveMessageID == nil { await openLiveAnswer(model: liveModel) }
+        guard let messageID = liveMessageID else { return }
+        let chunk = Self.hasText(liveParts) ? "\n" + text : text
+        appendToLiveText(chunk)
+        turnHadContent = true
+        await publish(.partTextDelta(messageID: messageID, delta: chunk))
+    }
+
+    private static func hasText(_ parts: [LivePart]) -> Bool {
+        parts.contains { part in
+            if case .text(let text) = part { return !text.isEmpty }
+            return false
+        }
+    }
+
+    /// The terminal word on a prompt, sent once after everything the prompt caused has settled. A
+    /// turn the engine ended without a terminal `agent_end` — an abort for a manual compaction, a
+    /// failure before the model was reached — is closed here at once instead of after the silence
+    /// healer's twenty seconds and two probes.
+    private func settlePrompt(_ frame: JSONValue) async {
+        guard running, let id = frame["id"]?.stringValue, id == turnRequestID else { return }
+        switch frame["status"]?.stringValue {
+        case "aborted":
+            finishTurn(cause: .aborted)
+        case "error":
+            let error = frame["error"]?["message"]?.stringValue
+                ?? "The turn failed."
+            if turnLastErrorMessage == nil { turnLastErrorMessage = error }
+            if !turnHadContent { await publish(.error(error)) }
+            finishTurn()
+        default:
+            finishTurn()
+        }
     }
 
     private func syncState(from proc: OmpProcess) async {
@@ -939,6 +995,7 @@ actor OmpSession {
     private func finishTurn(cause: TurnEndCause = .agentEnd) {
         guard running else { return }
         running = false
+        turnRequestID = nil
         settleOwnTurn()
         var unfinished = closeLiveMessage()
         let answer = (unfinished ?? messages.last { $0.role == .assistant }).map(Self.plainText) ?? ""
@@ -1253,6 +1310,10 @@ actor OmpSession {
             knownCommands = CommandCatalog.parse(frame["commands"]?.arrayValue ?? [])
         case "subagent_lifecycle", "subagent_progress":
             await recordSubagentFrame(frame, type: type)
+        case "prompt_result":
+            await settlePrompt(frame)
+        case "command_output":
+            await appendCommandOutput(frame["text"]?.stringValue ?? "")
         case "agent_end":
             let terminal = frame["isTerminal"]?.boolValue ?? true
             if terminal {
@@ -1313,22 +1374,7 @@ actor OmpSession {
         guard let message = frame["message"], let role = message["role"]?.stringValue else { return }
         switch role {
         case "assistant":
-            liveMessageID = "a-\(UUID().uuidString.prefix(8))"
-            liveCreatedAt = Date()
-            liveParts = []
-            pendingContentIndexes = [:]
-            liveUsage = TokenCounts()
-            liveContext = nil
-            liveCost = 0
-            liveModel = TranscriptLoader.qualifiedModel(in: message) ?? liveModel
-            lastSnapshotAt = .distantPast
-            if let id = liveMessageID, let created = liveCreatedAt {
-                await publish(
-                    .messageUpserted(
-                        Message(
-                            id: id, role: .assistant, parts: [.text("")], createdAt: created,
-                            seconds: nil, model: liveModel, usage: nil, costUSD: nil)))
-            }
+            await openLiveAnswer(model: TranscriptLoader.qualifiedModel(in: message) ?? liveModel)
         case "user", "toolResult":
             break
         default:
@@ -1379,6 +1425,25 @@ actor OmpSession {
             }
         default:
             break
+        }
+    }
+
+    private func openLiveAnswer(model: String?) async {
+        liveMessageID = "a-\(UUID().uuidString.prefix(8))"
+        liveCreatedAt = Date()
+        liveParts = []
+        pendingContentIndexes = [:]
+        liveUsage = TokenCounts()
+        liveContext = nil
+        liveCost = 0
+        liveModel = model
+        lastSnapshotAt = .distantPast
+        if let id = liveMessageID, let created = liveCreatedAt {
+            await publish(
+                .messageUpserted(
+                    Message(
+                        id: id, role: .assistant, parts: [.text("")], createdAt: created,
+                        seconds: nil, model: liveModel, usage: nil, costUSD: nil)))
         }
     }
 
