@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.12.0 — 2026-11-06
+
+- `GET /sessions/:id/wait?until=settled` holds the phone's background wait until the conversation's work is over: no turn, no queued prompt waiting to start one, no sub-agent still at work, and ten seconds of quiet, so the phone says one piece of work is done once rather than once per turn. The answer says `settled: true` and its duration covers the whole stretch; `/status` says `turnWait: 2`.
+
 ## 0.11.0 — 2026-11-04
 
 - Sub-agents show up. Every field of oh-my-pi's sub-agent frames was read from the wrong level, so no omp chat ever listed an agent; each now carries its kind, the call that started it, its tool count and current tool, and starts, ends and progress reach the app on the stream as they happen.
