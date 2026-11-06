@@ -450,7 +450,7 @@ actor App {
         BridgeStatus(
             agent: "omp", model: config.defaultModel ?? "", version: version,
             authenticated: await authFlow.isAuthenticatedCached(), proto: 2,
-            epoch: hub.epoch, turnWait: 1, marks: 1, queue: 1)
+            epoch: hub.epoch, turnWait: 2, marks: 1, queue: 1)
     }
 
     func hubEpoch() -> String { hub.epoch }

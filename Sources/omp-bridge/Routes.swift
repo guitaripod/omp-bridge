@@ -601,11 +601,14 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         } catch { return sessionError(error) }
     }
 
-    router.get("sessions/:id/wait") { _, context in
+    router.get("sessions/:id/wait") { request, context in
         do {
             let session = try await resolveSession(context)
+            let untilSettled = request.uri.queryParameters.get("until") == "settled"
             let body = ResponseBody { writer in
-                try await TurnWaitEngine.run(session: session, maxWait: config.waitMax, writer: &writer)
+                try await TurnWaitEngine.run(
+                    session: session, maxWait: config.waitMax, untilSettled: untilSettled,
+                    writer: &writer)
             }
             var headers = HTTPFields()
             headers[.contentType] = "application/json"

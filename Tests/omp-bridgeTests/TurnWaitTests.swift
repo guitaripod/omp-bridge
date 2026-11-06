@@ -162,6 +162,39 @@ private struct CollectingWriter: ResponseBodyWriter {
         #expect(wait?.toolCount == 3)
     }
 
+    @Test func aWaitForSettledWorkHoldsThroughTheGraceAndSpeaksForTheStretch() async throws {
+        let session = makeSession()
+        await session.handleOmpEvent(.object(["type": .string("agent_start")]))
+        await session.handleOmpEvent(.object(["type": .string("turn_start")]))
+        await session.handleOmpEvent(.object(["type": .string("agent_end")]))
+        let ended = try #require(await session.lastOutcomeSnapshot()?.endedAt)
+        #expect(
+            await TurnWaitEngine.resolved(for: session, waited: true, untilSettled: true, now: ended)
+                == nil)
+        let held = await TurnWaitEngine.resolved(
+            for: session, waited: true, untilSettled: true,
+            now: ended.addingTimeInterval(TurnWaitEngine.grace))
+        #expect(held?.settled == true)
+        #expect(held?.state == .ended)
+        #expect(held?.toolCount == 1)
+        #expect((held?.duration ?? -1) >= 0)
+        #expect(await TurnWaitEngine.resolved(for: session, waited: true)?.settled == nil)
+    }
+
+    @Test func aRunningTurnHoldsASettledWaitAndAnAskStillAnswersAtOnce() async throws {
+        let session = makeSession()
+        await session.handleOmpEvent(.object(["type": .string("agent_start")]))
+        #expect(await TurnWaitEngine.resolved(for: session, waited: true, untilSettled: true) == nil)
+        await session.handleOmpEvent(
+            .object([
+                "type": .string("extension_ui_request"), "id": .string("ask-2"),
+                "method": .string("confirm"), "title": .string("Proceed?"),
+            ]))
+        #expect(
+            await TurnWaitEngine.resolved(for: session, waited: true, untilSettled: true)?.state
+                == .needsYou)
+    }
+
     @Test func turnWaitEncodingOmitsUnknownFields() throws {
         let wait = TurnWait(state: .ended, waited: false)
         let data = try WireCoding.encoder.encode(wait)

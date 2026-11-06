@@ -33,6 +33,9 @@ struct TurnWait: Codable, Sendable, Equatable {
     var duration: Double? = nil
     var lastMessageID: String? = nil
     var endedAt: Date? = nil
+    /// Held until the work settled (`until=settled`): nothing runs, queues or works for the
+    /// conversation, and `duration` is the whole stretch of work.
+    var settled: Bool? = nil
 }
 
 /// What a turn left behind, once ``OmpSession`` closes it — the only record `GET
@@ -54,16 +57,21 @@ struct TurnOutcome: Sendable, Equatable {
 enum TurnWaitEngine {
     static let heartbeatInterval: TimeInterval = 10
     static let pollInterval: Duration = .milliseconds(200)
+    /// How long the conversation must stay still before a wait held for settled work answers: long
+    /// enough for a queued prompt or a subagent's report to have started the next turn. The same
+    /// grace Tailscode and claude-bridge hold finished work to.
+    static let grace: TimeInterval = 10
 
     static func run(
-        session: OmpSession, maxWait: TimeInterval, writer: inout any ResponseBodyWriter
+        session: OmpSession, maxWait: TimeInterval, untilSettled: Bool = false,
+        writer: inout any ResponseBodyWriter
     ) async throws {
         try await writer.write(newline())
         let startedAt = Date()
         var lastHeartbeatAt = startedAt
         var waited = false
         while true {
-            if let wait = await resolved(for: session, waited: waited) {
+            if let wait = await resolved(for: session, waited: waited, untilSettled: untilSettled) {
                 try await emit(wait, writer: &writer)
                 return
             }
@@ -88,7 +96,12 @@ enum TurnWaitEngine {
     /// reports (`running` or `externallyLive`) — a turn a terminal is running blocks the wait
     /// exactly as it blocks that route, and the periodic sweep that keeps `externallyLive` current
     /// is what makes polling this correct for one that has no events of its own to fire.
-    static func resolved(for session: OmpSession, waited: Bool) async -> TurnWait? {
+    ///
+    /// Held for settled work, a turn that closed is not yet an answer: the queue, a subagent still
+    /// at work or the grace keep the wait open, and the answer then speaks for the whole stretch.
+    static func resolved(
+        for session: OmpSession, waited: Bool, untilSettled: Bool = false, now: Date = Date()
+    ) async -> TurnWait? {
         let title = await session.titleText()
         if let question = await session.pendingQuestion() {
             return TurnWait(
@@ -98,13 +111,26 @@ enum TurnWaitEngine {
         let running = await session.isRunningValue()
         let externallyLive = await session.externallyLiveValue()
         guard !running, !externallyLive else { return nil }
-        guard let outcome = await session.lastOutcomeSnapshot() else {
-            return TurnWait(state: .ended, waited: waited, title: title)
+        guard untilSettled else {
+            guard let outcome = await session.lastOutcomeSnapshot() else {
+                return TurnWait(state: .ended, waited: waited, title: title)
+            }
+            return TurnWait(
+                state: .ended, waited: waited, ending: outcome.ending, title: title,
+                toolCount: outcome.toolCount, duration: outcome.duration,
+                lastMessageID: outcome.lastMessageID, endedAt: outcome.endedAt)
         }
+        guard await !session.carriesWork() else { return nil }
+        guard let outcome = await session.lastOutcomeSnapshot() else {
+            return TurnWait(state: .ended, waited: waited, title: title, settled: true)
+        }
+        guard now.timeIntervalSince(outcome.endedAt) >= grace else { return nil }
+        let began = await session.workBegan
         return TurnWait(
             state: .ended, waited: waited, ending: outcome.ending, title: title,
-            toolCount: outcome.toolCount, duration: outcome.duration,
-            lastMessageID: outcome.lastMessageID, endedAt: outcome.endedAt)
+            toolCount: outcome.toolCount,
+            duration: began.map { max(0, outcome.endedAt.timeIntervalSince($0)) } ?? outcome.duration,
+            lastMessageID: outcome.lastMessageID, endedAt: outcome.endedAt, settled: true)
     }
 
     private static func newline() -> ByteBuffer {

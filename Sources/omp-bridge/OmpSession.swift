@@ -158,6 +158,33 @@ actor OmpSession {
 
     func lastOutcomeSnapshot() -> TurnOutcome? { lastTurnOutcome }
 
+    /// When the stretch of work the last turn belongs to began: the first turn since one that
+    /// settled, so a wait held for settled work can say how long the person was waited on.
+    private(set) var workBegan: Date?
+
+    /// Whether anything will start a turn on its own or is still working for this conversation:
+    /// a turn, a terminal driving the transcript, a queued prompt that is not paused, or a
+    /// subagent still at work.
+    func carriesWork() -> Bool {
+        busy || externallyLive || (!queuePaused && !queue.isEmpty) || activeAgentCount > 0
+    }
+
+    /// Whether the last turn left something behind that would start another: a sub-agent still at
+    /// work or a prompt queued to go. A turn that follows one of those is the same stretch of
+    /// work however long the gap.
+    private var endedCarrying = false
+
+    /// A turn is starting. One that follows a settled stretch begins a new one.
+    private func noteTurnStarted(at now: Date) {
+        if let last = lastTurnOutcome, !endedCarrying,
+            now.timeIntervalSince(last.endedAt) >= TurnWaitEngine.grace
+        {
+            workBegan = now
+        } else if workBegan == nil {
+            workBegan = now
+        }
+    }
+
     var summary: SessionSummary {
         SessionSummary(
             id: id, title: title, directory: directory, model: model, effort: effort,
@@ -600,6 +627,7 @@ actor OmpSession {
         running = true
         starting = false
         turnStartedAt = Date()
+        noteTurnStarted(at: turnStartedAt ?? Date())
         turnPrompt = display
         turnCalls = 0
         turnTokens = TokenCounts()
@@ -1090,6 +1118,7 @@ actor OmpSession {
     /// remembers it: ``turnStartedAt`` and the turn counters below are cleared for the next turn
     /// the moment this call returns.
     private func recordTurnOutcome(cause: TurnEndCause, unfinished: Message?) {
+        endedCarrying = activeAgentCount > 0 || (!queuePaused && !queue.isEmpty)
         let duration = turnStartedAt.map { Date().timeIntervalSince($0) }
         lastTurnOutcome = TurnOutcome(
             ending: Self.turnEnding(
@@ -1320,7 +1349,10 @@ actor OmpSession {
                 running = true
                 await quietRegistry.increment()
             }
-            if turnStartedAt == nil { turnStartedAt = Date() }
+            if turnStartedAt == nil {
+                turnStartedAt = Date()
+                noteTurnStarted(at: turnStartedAt ?? Date())
+            }
         case "turn_start":
             turnCalls += 1
         case "message_start":
