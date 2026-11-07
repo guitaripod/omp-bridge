@@ -29,4 +29,18 @@ import Testing
         #expect(list?.isEmpty == false)
         await process.stop()
     }
+
+    @Test func authProbeArgumentsStillListLoginProviders() async throws {
+        guard !Self.ompPath.isEmpty else { return }
+        let workdir = NSTemporaryDirectory() + "omp-live-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: workdir, withIntermediateDirectories: true)
+        let process = OmpProcess(
+            ompBin: Self.ompPath, directory: workdir, arguments: AuthFlow.probeArguments
+        ) { _ in }
+        try await process.start()
+        let response = await process.request("get_login_providers", timeout: 20)
+        #expect(response.success)
+        #expect(response.data?["providers"]?.arrayValue?.isEmpty == false)
+        await process.stop()
+    }
 }

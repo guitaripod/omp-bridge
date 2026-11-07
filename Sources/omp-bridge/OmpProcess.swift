@@ -104,6 +104,7 @@ actor OmpProcess {
     private let ompBin: String
     private let directory: String
     private let extraEnv: [String: String]
+    private let arguments: [String]
     private let onEvent: @Sendable (JSONValue) async -> Void
     private var process: Process?
     private var stdinHandle: FileHandle?
@@ -118,11 +119,13 @@ actor OmpProcess {
 
     init(
         ompBin: String, directory: String, extraEnv: [String: String] = [:],
+        arguments: [String] = [],
         onEvent: @escaping @Sendable (JSONValue) async -> Void
     ) {
         self.ompBin = ompBin
         self.directory = directory
         self.extraEnv = extraEnv
+        self.arguments = arguments
         self.onEvent = onEvent
     }
     /// `omp` is a `#!/usr/bin/env bun` script, and a service started at boot carries a PATH
@@ -141,7 +144,7 @@ actor OmpProcess {
         negotiated = false
         let p = Process()
         p.executableURL = URL(fileURLWithPath: ompBin)
-        p.arguments = ["--mode", "rpc"]
+        p.arguments = ["--mode", "rpc"] + arguments
         p.currentDirectoryURL = URL(fileURLWithPath: directory)
         var env = ProcessInfo.processInfo.environment
         env.merge(extraEnv) { _, new in new }

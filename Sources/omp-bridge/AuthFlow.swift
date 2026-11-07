@@ -137,8 +137,16 @@ actor AuthFlow {
         pendingStartedAt = nil
     }
 
+    /// The auth probe only asks omp for its login providers, so it starts omp without skills:
+    /// with them, every start sends each uncached skill description to the `smol` model to
+    /// compress, and a probe that runs every minute and exits before the answers land keeps
+    /// cold-starting that model on the GPU for nothing.
+    static let probeArguments = ["--no-skills"]
+
     private func providerStates() async -> [AuthStatusDTO.ProviderDTO] {
-        let probe = OmpProcess(ompBin: config.ompBin, directory: config.workdir) { _ in }
+        let probe = OmpProcess(
+            ompBin: config.ompBin, directory: config.workdir, arguments: Self.probeArguments
+        ) { _ in }
         do {
             try await probe.start()
         } catch {
