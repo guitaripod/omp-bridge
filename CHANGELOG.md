@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.12.2 — 2026-11-09
+
+- The Mac bridge no longer crashes when a phone sends it a message over a cellular network. 0.11.0 to 0.12.1 for macOS were built by Xcode 26, whose Swift compiler mishandles a request whose body arrives a moment after its headers: the bridge died on every such send, the phone said the network connection was lost, and the bridge restarted. It is built by Xcode 27 now, and every release is started and sent a late body before it is published. Linux releases were never affected.
+
 ## 0.12.1 — 2026-11-09
 
 - The sign-in check that runs every minute starts oh-my-pi without its skills, so it no longer wakes the small model on your graphics card to compress skill descriptions it exits before reading.
