@@ -25,6 +25,7 @@ jobs:
       - name: Check the tag is the version in CHANGELOG.md
         run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' CHANGELOG.md | head -1)"
       - run: scripts/package-release.sh
+      - run: scripts/smoke-release.sh dist/*.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.platform }}
@@ -33,12 +34,14 @@ jobs:
             dist/*.sha256
 
   package-macos:
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
       - name: Check the tag is the version in CHANGELOG.md
         run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' CHANGELOG.md | head -1)"
+      - run: swift --version
       - run: scripts/package-release.sh
+      - run: scripts/smoke-release.sh dist/*.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: dist-darwin-arm64
