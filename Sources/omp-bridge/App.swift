@@ -108,6 +108,13 @@ actor App {
         return session
     }
 
+    /// Writes a chat made from a client to the store at once rather than on the next sweep, so a
+    /// bridge that stops in the seconds before its first prompt still knows the chat afterwards.
+    func persistNewSession(_ session: OmpSession) async {
+        await store.upsert(await record(for: session))
+        await store.flush()
+    }
+
     func liveSession(id: String) -> OmpSession? { sessions[id] }
 
     func liveSessionIDs() -> [String] { Array(sessions.keys) }
@@ -334,6 +341,11 @@ actor App {
     /// adopt the same transcript twice under different UUIDs, and a store carrying such twins would
     /// re-grow the doubled row on every launch. The newest record wins; the losers are removed for
     /// good, not hidden, so the survivor keeps answering for the transcript.
+    ///
+    /// A chat that has no transcript yet is restored empty. oh-my-pi writes the file only once the
+    /// first prompt reaches it, so skipping such a record answered 404 to the client that had just
+    /// made the chat whenever the bridge restarted before that prompt, and every send after it
+    /// failed with "not found". A record whose transcript existed and is gone stays dropped.
     private func restorePersistedSessions() async {
         var ownerByFile: [String: SessionRecord] = [:]
         var twins: [SessionRecord] = []
@@ -350,19 +362,21 @@ actor App {
         }
         for record in await store.allRecords() {
             guard sessions[record.id] == nil else { continue }
-            guard let file = record.ompSessionFile,
-                FileManager.default.fileExists(atPath: file)
-            else { continue }
-            let loaded = TranscriptLoader.load(sessionFile: file)
+            if let file = record.ompSessionFile, !FileManager.default.fileExists(atPath: file) {
+                continue
+            }
             let session = OmpSession(
                 id: record.id, title: record.title,
                 directory: record.directory ?? config.workdir,
-                model: record.model, effort: record.effort, ompSessionFile: file,
+                model: record.model, effort: record.effort, ompSessionFile: record.ompSessionFile,
                 config: config, hub: hub, quietRegistry: quietRegistry, journal: journal,
                 restoredDates: (record.createdAt, record.updatedAt), forkedAt: record.forkedAt,
                 namedByHand: record.customTitle ?? false,
                 namedByModel: record.titledByModel ?? false)
-            await session.adoptExternally(loaded: loaded, ompID: record.ompSessionID)
+            if let file = record.ompSessionFile {
+                await session.adoptExternally(
+                    loaded: TranscriptLoader.load(sessionFile: file), ompID: record.ompSessionID)
+            }
             await session.setScheduleID(record.scheduleID)
             sessions[record.id] = session
             ownedTranscriptsBySession[record.id] = Set(await session.ownedTranscriptIDs())

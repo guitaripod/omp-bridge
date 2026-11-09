@@ -180,6 +180,48 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         try? FileManager.default.removeItem(atPath: path)
     }
 
+    /// oh-my-pi writes a transcript only once the first prompt reaches it, so a chat a client has
+    /// just made has none. A bridge that stopped before that prompt used to come back without the
+    /// chat and answer every send to it with 404.
+    @Test func aChatWithNoPromptYetSurvivesARestart() async throws {
+        let dir = makeTempDir("restart-empty")
+        let config = Config(
+            port: 0, bind: "127.0.0.1", password: "x", workdir: dir,
+            ompBin: "/nonexistent/omp", storePath: dir + "/sessions.json",
+            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil, waitMax: 10800)
+        let first = App(config: config)
+        let made = await first.createSession(title: nil, directory: dir, model: "m/one", effort: "high")
+        await first.persistNewSession(made)
+
+        let second = App(config: config)
+        await second.prepare()
+        let back = try #require(await second.liveSession(id: made.id))
+        #expect(await back.modelName() == "m/one")
+        #expect(await back.effortLevel() == "high")
+        #expect(await back.snapshotMessages().isEmpty)
+    }
+
+    @Test func aChatWhoseTranscriptWasDeletedStaysGoneAfterARestart() async throws {
+        let dir = makeTempDir("restart-deleted")
+        let config = Config(
+            port: 0, bind: "127.0.0.1", password: "x", workdir: dir,
+            ompBin: "/nonexistent/omp", storePath: dir + "/sessions.json",
+            stateDir: dir, srcPath: nil, defaultModel: nil, defaultEffort: "medium", titleModel: nil, waitMax: 10800)
+        let store = SessionStore(path: dir + "/sessions.json")
+        await store.upsert(
+            SessionRecord(
+                id: "gone", title: "gone", directory: dir, model: "", effort: "medium",
+                createdAt: Date(), updatedAt: Date(), ompSessionID: "x",
+                ompSessionFile: dir + "/missing.jsonl", customTitle: false, titledByModel: false,
+                turns: [], totalCostUSD: 0, totalTokens: TokenCounts(), lastCostUSD: nil,
+                lastTokens: nil, interruption: nil, autoResume: nil, ownedTranscriptIDs: nil))
+        await store.flush()
+
+        let app = App(config: config)
+        await app.prepare()
+        #expect(await app.liveSession(id: "gone") == nil)
+    }
+
     @Test func deletedSessionStaysGoneAfterReopen() async throws {
         let dir = makeTempDir("hide")
         let ompID = "33333333-3333-7333-8333-333333333333"

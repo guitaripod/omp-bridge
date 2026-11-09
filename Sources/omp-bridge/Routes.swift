@@ -292,6 +292,7 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
             title: nil, directory: nil, model: nil, effort: nil)
         let session = await app.createSession(
             title: body.title, directory: body.directory, model: body.model, effort: body.effort)
+        await app.persistNewSession(session)
         return jsonResponse(await sessionSnapshot(session), status: .created)
     }
 
