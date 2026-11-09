@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.12.1 — 2026-11-09
+
+- The sign-in check that runs every minute starts oh-my-pi without its skills, so it no longer wakes the small model on your graphics card to compress skill descriptions it exits before reading.
+
 ## 0.12.0 — 2026-11-06
 
 - `GET /sessions/:id/wait?until=settled` holds the phone's background wait until the conversation's work is over: no turn, no queued prompt waiting to start one, no sub-agent still at work, and ten seconds of quiet, so the phone says one piece of work is done once rather than once per turn. The answer says `settled: true` and its duration covers the whole stretch; `/status` says `turnWait: 2`.

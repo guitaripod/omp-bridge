@@ -1,7 +1,7 @@
 import Foundation
 
 enum OmpVersion {
-    static let fallback = "0.12.0"
+    static let fallback = "0.12.1"
 
     static func isVersionRequest(_ arguments: [String]) -> Bool {
         arguments.dropFirst().first.map { $0 == "--version" || $0 == "version" } ?? false
