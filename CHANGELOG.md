@@ -4,6 +4,12 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.13.0 — 2026-11-10
+
+- Chapters, as claude-bridge keeps them. Every third message the engine looks at whether the chat still wears the right name; where the topic moved, the chat is renamed and a chapter opens at the message where it turned, and the chapter it closed gets one sentence saying what it came to. The app lists them in the chapters panel and marks each one in the conversation. A name you gave the chat stays; the chapters still follow the topic under it. A chat older than this with six or more messages is split into its chapters once, the first time it is opened. The looks run on the chat's own model (or `OMP_TITLE_MODEL`); a model that thinks out loud first is read past its thinking, a split that opens a chapter at nearly every message is not used, and one finer than a chapter per three messages is folded to that.
+- A turn that failed stays in the chat. An answer oh-my-pi ended with an error — a provider out of credits answering HTTP 402, say — keeps the provider's words, live and when the chat is opened later, instead of leaving a prompt nobody answered.
+- `/clear` names the chat afresh from what is said next.
+
 ## 0.12.3 — 2026-11-10
 
 - A new chat survives a restart before its first message. oh-my-pi writes a conversation to disk only once the first message reaches it, and the bridge forgot any chat without one when it restarted, so a chat opened just before an update, a reboot or a crash answered every message after it with "not found". Such a chat comes back empty now, and a chat is saved the moment it is made.
