@@ -29,6 +29,10 @@ struct SessionRecord: Codable, Sendable {
     var forkedAt: Date?
     /// The schedule this conversation runs for, when a schedule made it.
     var scheduleID: String? = nil
+    var chapters: [Chapter]? = nil
+    var chaptersRevision: Int? = nil
+    /// The person's message count when the title was last written or confirmed by a look.
+    var titledAtTurn: Int? = nil
 }
 
 actor SessionStore {

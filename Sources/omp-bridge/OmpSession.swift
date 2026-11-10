@@ -50,6 +50,14 @@ actor OmpSession {
     private(set) var customTitle = false
     private(set) var autoTitled = false
     private var titling = false
+    private(set) var chapters: [Chapter] = []
+    private(set) var chaptersRevision = 0
+    /// The person's message count when the title was last written or confirmed by a look.
+    private(set) var titledAtTurn: Int?
+    /// Counts clears, so a title, look or split that was out while the conversation was cleared
+    /// lands on nothing.
+    private var conversationEpoch = 0
+    private var backfillTried = false
 
     private let config: Config
     private let hub: Hub
@@ -294,10 +302,16 @@ actor OmpSession {
     /// title row is never filled in under the bridge, so this is the only thing that turns a slice
     /// of first prompt into a name. A rename by hand always wins, including against a call already
     /// in flight, and a failed call simply leaves the provisional name standing.
+    ///
+    /// Once named, every few of the person's messages the name is looked at again, and where the
+    /// topic moved a chapter opens.
     func autoTitleIfUnnamed() {
-        guard let call = titleCall() else { return }
+        guard let call = titleCall() else {
+            reviseTitleIfDue()
+            return
+        }
         Task { [weak self] in
-            await self?.applyAutoTitle(await Self.write(call))
+            await self?.applyAutoTitle(await Self.write(call), for: call)
         }
     }
 
@@ -306,7 +320,7 @@ actor OmpSession {
     /// engine.
     func autoTitleNow() async {
         guard let call = titleCall() else { return }
-        applyAutoTitle(await Self.write(call))
+        await applyAutoTitle(await Self.write(call), for: call)
     }
 
     private struct TitleCall: Sendable {
@@ -315,6 +329,8 @@ actor OmpSession {
         let cwd: String
         let user: String
         let assistant: String
+        let turn: Int
+        let epoch: Int
     }
 
     private static func write(_ call: TitleCall) async -> String? {
@@ -324,23 +340,195 @@ actor OmpSession {
     }
 
     private func titleCall() -> TitleCall? {
-        guard !customTitle, !autoTitled, !titling,
-            let user = firstText(of: .user),
-            let assistant = firstText(of: .assistant) ?? firstReasoning()
+        guard !customTitle, !autoTitled, !titling else { return nil }
+        let opening = ChapterBook.opening(chapters, messages: messages)
+        guard let user = opening?.user ?? firstText(of: .user),
+            let assistant = opening?.answer ?? firstText(of: .assistant) ?? firstReasoning()
         else { return nil }
         titling = true
         return TitleCall(
-            binary: config.ompBin, model: config.titleModel ?? (model.isEmpty ? nil : model),
-            cwd: config.titlerWorkdir, user: user, assistant: assistant)
+            binary: config.ompBin, model: titlingModel, cwd: config.titlerWorkdir, user: user,
+            assistant: assistant, turn: ChapterBook.prompts(in: messages).count,
+            epoch: conversationEpoch)
     }
 
+    private var titlingModel: String? { config.titleModel ?? (model.isEmpty ? nil : model) }
+
     /// The name lands without touching `updatedAt`: a title written minutes or days after the
-    /// last word was said must not shuffle the chat back to the top of the list.
-    private func applyAutoTitle(_ written: String?) {
+    /// last word was said must not shuffle the chat back to the top of the list. The chapter the
+    /// conversation is in takes it too.
+    private func applyAutoTitle(_ written: String?, for call: TitleCall) async {
         titling = false
-        guard let written, !customTitle, !autoTitled else { return }
+        guard let written, !customTitle, !autoTitled, call.epoch == conversationEpoch else { return }
+        let prior = title
         title = written
         autoTitled = true
+        titledAtTurn = max(titledAtTurn ?? 0, call.turn)
+        if ChapterBook.renamed(&chapters, messages: messages, to: written, by: .model, priorTitle: prior) {
+            await publishChapters()
+        }
+    }
+
+    static let retitleEvery = 3
+
+    /// Whether enough of the person's messages have gone by since the title was last written or
+    /// confirmed to look again. A title written before turns were counted is due at once.
+    static func retitleDue(turn: Int, titledAt: Int?) -> Bool {
+        turn - (titledAt ?? 0) >= retitleEvery
+    }
+
+    /// Asks whether the conversation still wears the right name, with the person's newest messages
+    /// and the latest answer. A name the person chose is not changed, but the topic can still move
+    /// under it, so the look still runs and only the chapters follow it. A schedule's conversation
+    /// is never looked at. One call per conversation is out at a time.
+    private func reviseTitleIfDue() {
+        guard customTitle || autoTitled, scheduleID == nil, !titling else { return }
+        let turn = ChapterBook.prompts(in: messages).count
+        guard Self.retitleDue(turn: turn, titledAt: titledAtTurn) else { return }
+        let shown = ChapterBook.recent(messages, since: titledAtTurn, through: turn)
+        guard !shown.isEmpty,
+            let answer = messages.last(where: {
+                $0.role == .assistant && !ChapterBook.text(of: $0).isEmpty
+            }).map(ChapterBook.text(of:))
+        else { return }
+        titling = true
+        let current = chapters.last?.title ?? title
+        let texts = shown.map { ChapterBook.text(of: $0.message) }
+        let turns = shown.map(\.turn)
+        let binary = config.ompBin
+        let engine = titlingModel
+        let cwd = config.titlerWorkdir
+        let epoch = conversationEpoch
+        Task { [weak self] in
+            let verdict = await Titler.revised(
+                binary: binary, model: engine, cwd: cwd, current: current, prompts: texts,
+                assistant: answer)
+            await self?.applyRevision(verdict, shown: turns, turn: turn, epoch: epoch)
+        }
+    }
+
+    /// Lands a look. A failed look stamps nothing, so the next turn asks again; a KEEP stamps when
+    /// the title was last looked at; a rename renames the current chapter, never one the person
+    /// named; a move opens a chapter at the message the look named and sums up the one it closed.
+    /// Under a title the person pinned only the chapters change. A look a clear overtook is dropped.
+    private func applyRevision(_ verdict: Titler.Verdict, shown: [Int], turn: Int, epoch: Int) async {
+        titling = false
+        guard epoch == conversationEpoch, scheduleID == nil, turn >= (titledAtTurn ?? 0) else { return }
+        let pinned = customTitle
+        switch verdict {
+        case .failed:
+            return
+        case .kept:
+            titledAtTurn = turn
+        case .renamed(let renamed):
+            titledAtTurn = turn
+            guard chapters.last?.namedBy != .person else { return }
+            let prior = chapters.last?.title ?? title
+            if !pinned { title = renamed }
+            if ChapterBook.renamed(
+                &chapters, messages: messages, to: renamed, by: .model, priorTitle: prior)
+            {
+                await publishChapters()
+            }
+        case .moved(let moved, let start):
+            titledAtTurn = turn
+            guard shown.indices.contains(start - 1) else { return }
+            let prior = chapters.last?.title ?? title
+            if !pinned { title = moved }
+            let closed = ChapterBook.opened(
+                &chapters, messages: messages, title: moved, atTurn: shown[start - 1],
+                priorTitle: prior)
+            if closed == nil, chapters.last?.namedBy != .person {
+                ChapterBook.renamed(&chapters, messages: messages, to: moved, by: .model, priorTitle: prior)
+            }
+            await publishChapters()
+            if let closed { sumUp(closed: closed) }
+        }
+    }
+
+    /// Writes the closed chapter's one-sentence gist in the background. A failed call leaves the
+    /// chapter without one; nothing retries.
+    private func sumUp(closed index: Int) {
+        guard chapters.indices.contains(index),
+            let input = ChapterBook.gistInput(chapters, messages: messages, closed: index)
+        else { return }
+        let chapter = chapters[index]
+        let binary = config.ompBin
+        let engine = titlingModel
+        let cwd = config.titlerWorkdir
+        Task { [weak self] in
+            guard let gist = await Titler.gist(
+                binary: binary, model: engine, cwd: cwd, title: chapter.title,
+                prompts: input.prompts, answer: input.answer)
+            else { return }
+            await self?.applyGist(gist, to: chapter)
+        }
+    }
+
+    private func applyGist(_ gist: String, to chapter: Chapter) async {
+        guard ChapterBook.summed(&chapters, chapter: chapter, gist: gist) else { return }
+        await publishChapters()
+    }
+
+    /// Splits a conversation older than chapters into them, once, the first time it is read with
+    /// enough history. A conversation that gains chapters of its own meanwhile keeps those.
+    func backfillChaptersIfNeeded() {
+        guard !backfillTried, !titling, chapters.isEmpty, scheduleID == nil, !busy else { return }
+        let shown = ChapterBook.backfillPrompts(messages)
+        guard shown.count >= ChapterBook.backfillFloor else { return }
+        backfillTried = true
+        titling = true
+        let current = title
+        let texts = shown.map { ChapterBook.text(of: $0.message) }
+        let binary = config.ompBin
+        let engine = titlingModel
+        let cwd = config.titlerWorkdir
+        let epoch = conversationEpoch
+        Task { [weak self] in
+            let segments = await Titler.segments(
+                binary: binary, model: engine, cwd: cwd, current: current, prompts: texts)
+            await self?.applyBackfill(segments, shown: shown, epoch: epoch)
+        }
+    }
+
+    private func applyBackfill(
+        _ segments: [Titler.Segment]?, shown: [(turn: Int, message: Message)], epoch: Int
+    ) async {
+        titling = false
+        guard let segments, epoch == conversationEpoch,
+            let split = ChapterBook.backfilled(
+                chapters, messages: messages, title: title, customTitle: customTitle,
+                segments: segments, shown: shown)
+        else { return }
+        chapters = split
+        await publishChapters()
+    }
+
+    /// The chapters changed: the change is counted and every client watching is handed the whole
+    /// list with its count. The store writes them down on its next sweep, which compares the count.
+    private func publishChapters() async {
+        chaptersRevision += 1
+        await publish(
+            .chapters(
+                ChapterBook.resolved(chapters, messages: snapshotMessages()),
+                revision: chaptersRevision))
+    }
+
+    /// The chapters as a session read serves them: nil from a conversation that never had any.
+    func chaptersSnapshot() -> (chapters: [Chapter]?, revision: Int?) {
+        guard chaptersRevision > 0 || !chapters.isEmpty else { return (nil, nil) }
+        return (ChapterBook.resolved(chapters, messages: snapshotMessages()), chaptersRevision)
+    }
+
+    func chapterRecord() -> (chapters: [Chapter]?, revision: Int?, titledAtTurn: Int?) {
+        (chapters.isEmpty ? nil : chapters, chaptersRevision > 0 ? chaptersRevision : nil, titledAtTurn)
+    }
+
+    /// Puts back what the store kept, counted again against the messages as the transcript reads.
+    func restoreChapters(_ restored: [Chapter], revision: Int, titledAtTurn turn: Int?) {
+        chapters = ChapterBook.reanchored(restored, messages: messages)
+        chaptersRevision = revision
+        titledAtTurn = turn
     }
 
     /// The first thing this side of the conversation actually said. Not simply the first message:
@@ -556,9 +744,16 @@ actor OmpSession {
             parts: userParts, createdAt: Date(), seconds: nil, model: nil, usage: nil,
             costUSD: nil)
         messages.append(userMessage)
+        let prior = title
         titleFromFirstPrompt(display)
         touch()
         await publish(.messageUpserted(userMessage))
+        if ChapterBook.recorded(
+            &chapters, messages: messages, title: title, priorTitle: prior,
+            namer: ChapterBook.openingNamer(customTitle: customTitle, scheduled: scheduleID != nil))
+        {
+            await publishChapters()
+        }
     }
 
     /// How long a turn may go without a word from the engine before its liveness is questioned.
@@ -772,7 +967,9 @@ actor OmpSession {
         return (true, newlyPaused)
     }
 
-    func clear() throws {
+    /// Empties the conversation. What comes next is named afresh, and the chapters go with what
+    /// they told.
+    func clear() async throws {
         guard !running, queue.isEmpty else {
             throw BridgeError.conflict(
                 "This session has a turn running. Stop it first, or fork to start clean without interrupting it.")
@@ -781,7 +978,13 @@ actor OmpSession {
         turns.removeAll()
         totalCostUSD = 0
         totalTokens = TokenCounts()
+        conversationEpoch += 1
+        autoTitled = false
+        titledAtTurn = nil
+        let hadChapters = !chapters.isEmpty
+        chapters = []
         touch()
+        if hadChapters { await publishChapters() }
     }
 
     /// A manual compaction, run only between turns: oh-my-pi's `compact` aborts whatever turn
@@ -2060,6 +2263,7 @@ extension OmpSession {
 
     func adoptExternally(loaded: LoadedTranscript, ompID: String?) async {
         messages = loaded.messages
+        if !chapters.isEmpty { chapters = ChapterBook.reanchored(chapters, messages: messages) }
         adoptSpend(from: loaded.messages)
         if let id = ompID ?? loaded.sessionID { ompSessionID = id }
         if let cwd = loaded.cwd { directory = cwd }

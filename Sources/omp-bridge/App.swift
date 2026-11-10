@@ -36,6 +36,9 @@ actor App {
     /// A model-written title lands without moving `updatedAt`, so the store has to be told about
     /// the name as well as the clock or the new title would live only until the next restart.
     private var lastStoredTitle: [String: String] = [:]
+    /// The chapters' count and the turn the title was last looked at, for the same reason: both
+    /// change without moving `updatedAt`.
+    private var lastStoredChapters: [String: String] = [:]
     /// The schedules this machine keeps, made once the sessions are back.
     private(set) var scheduler: Scheduler?
 
@@ -203,6 +206,8 @@ actor App {
         await store.forgetMarks(id)
         lastSummaries.removeValue(forKey: id)
         lastStoredAt.removeValue(forKey: id)
+        lastStoredTitle.removeValue(forKey: id)
+        lastStoredChapters.removeValue(forKey: id)
         await hub.publish(.listRemove(id: id))
     }
 
@@ -215,8 +220,9 @@ actor App {
         if let file = sourceFile, FileManager.default.fileExists(atPath: file) {
             try? FileManager.default.copyItem(atPath: file, toPath: copyPath)
         }
+        let forkTitle = (await source.titleText()) + " (fork)"
         let session = OmpSession(
-            title: (await source.titleText()) + " (fork)",
+            title: forkTitle,
             directory: await source.directoryPath(),
             model: await source.modelName(),
             effort: await source.effortLevel(),
@@ -225,6 +231,12 @@ actor App {
         if FileManager.default.fileExists(atPath: copyPath) {
             let loaded = TranscriptLoader.load(sessionFile: copyPath)
             await session.adoptExternally(loaded: loaded, ompID: nil)
+        }
+        let carried = await source.chapterRecord()
+        if let chapters = carried.chapters {
+            await session.restoreChapters(
+                ChapterBook.forked(chapters, title: forkTitle), revision: carried.revision ?? 1,
+                titledAtTurn: carried.titledAtTurn)
         }
         sessions[session.id] = session
         return session
@@ -291,10 +303,14 @@ actor App {
             ownedTranscriptsBySession[session.id] = Set(await session.ownedTranscriptIDs())
             let updatedAt = await session.updatedDate()
             let title = await session.titleText()
+            let chapters = await session.chapterRecord()
+            let chapterMark = "\(chapters.revision ?? 0):\(chapters.titledAtTurn ?? 0)"
             guard lastStoredAt[session.id] != updatedAt || lastStoredTitle[session.id] != title
+                || lastStoredChapters[session.id] != chapterMark
             else { continue }
             lastStoredAt[session.id] = updatedAt
             lastStoredTitle[session.id] = title
+            lastStoredChapters[session.id] = chapterMark
             await store.upsert(await record(for: session))
         }
     }
@@ -326,7 +342,10 @@ actor App {
             autoResume: nil,
             ownedTranscriptIDs: ownedTranscriptIDs(for: session),
             forkedAt: session.forkedAt,
-            scheduleID: await session.scheduleID)
+            scheduleID: await session.scheduleID,
+            chapters: await session.chapterRecord().chapters,
+            chaptersRevision: await session.chapterRecord().revision,
+            titledAtTurn: await session.chapterRecord().titledAtTurn)
     }
 
     func flushAll() async {
@@ -378,6 +397,11 @@ actor App {
                     loaded: TranscriptLoader.load(sessionFile: file), ompID: record.ompSessionID)
             }
             await session.setScheduleID(record.scheduleID)
+            if record.chapters != nil || record.chaptersRevision != nil || record.titledAtTurn != nil {
+                await session.restoreChapters(
+                    record.chapters ?? [], revision: record.chaptersRevision ?? 0,
+                    titledAtTurn: record.titledAtTurn)
+            }
             sessions[record.id] = session
             ownedTranscriptsBySession[record.id] = Set(await session.ownedTranscriptIDs())
             await session.announceRestoredQueue()

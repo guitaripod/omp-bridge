@@ -133,6 +133,10 @@ struct Session: Codable, Sendable {
     /// Stamped when a session is served: the open turn is waiting on its provider between
     /// attempts, and why.
     var retry: RetryWait? = nil
+    /// The conversation's chapters, oldest first, and the count of every change to them, in
+    /// claude-bridge's shape.
+    var chapters: [Chapter]? = nil
+    var chaptersRevision: Int? = nil
 
     var summary: SessionSummary {
         SessionSummary(
@@ -282,11 +286,15 @@ enum BridgeEvent: Codable, Sendable {
     /// The open turn started waiting on its provider between attempts, or — `nil` — an attempt is
     /// answering again or the turn ended.
     case retry(RetryWait?)
+    /// The conversation's chapters changed: one opened, one was renamed or summed up, or a clear
+    /// emptied them. Always the whole list with its revision.
+    case chapters([Chapter], revision: Int)
 
     private enum CodingKeys: String, CodingKey {
         case type, message, messageID, delta, tool, status, error, phase, interruption
         case queue, paused
         case retry
+        case chapters, revision
     }
 
     func encode(to encoder: Encoder) throws {
@@ -323,6 +331,10 @@ enum BridgeEvent: Codable, Sendable {
         case .retry(let wait):
             try c.encode("retry", forKey: .type)
             try c.encodeIfPresent(wait, forKey: .retry)
+        case .chapters(let chapters, let revision):
+            try c.encode("chapters", forKey: .type)
+            try c.encode(chapters, forKey: .chapters)
+            try c.encode(revision, forKey: .revision)
         }
     }
 
@@ -351,6 +363,10 @@ enum BridgeEvent: Codable, Sendable {
                     queue: try c.decodeIfPresent([QueuedItem].self, forKey: .queue) ?? [],
                     paused: try c.decodeIfPresent(Bool.self, forKey: .paused) ?? false))
         case "retry": self = .retry(try c.decodeIfPresent(RetryWait.self, forKey: .retry))
+        case "chapters":
+            self = .chapters(
+                try c.decodeIfPresent([Chapter].self, forKey: .chapters) ?? [],
+                revision: try c.decodeIfPresent(Int.self, forKey: .revision) ?? 0)
         default: self = .error(try c.decode(String.self, forKey: .error))
         }
     }
@@ -482,6 +498,9 @@ struct BridgeStatus: Encodable {
     /// The protocol version of the session read's sidecar: `GET /sessions/:id` answers the cut-off
     /// turn and the provider wait as the whole word on each, in claude-bridge's shape.
     var detail = 1
+    /// The protocol version of chapters: a session read carries `chapters` and
+    /// `chaptersRevision`, and the session stream a `chapters` frame whenever they change.
+    var chapters = 1
     /// How a request got past the door, in claude-bridge's shape. This bridge has one door, the
     /// password, so it always says so.
     var access = StatusAccess()

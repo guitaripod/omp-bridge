@@ -457,6 +457,7 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     router.get("sessions/:id") { request, context in
         do {
             let session = try await resolveSession(context)
+            await session.backfillChaptersIfNeeded()
             return validatedJSONResponse(await sessionSnapshot(session), request: request)
         } catch { return sessionError(error) }
     }
@@ -788,6 +789,7 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         let running = await session.isRunningValue()
         let externallyLive = await session.externallyLiveValue()
         let held = await session.queueSnapshot()
+        let chapters = await session.chaptersSnapshot()
         return Session(
             id: session.id, title: await session.titleText(),
             directory: await session.directoryPath(), ompSessionID: await session.currentOmpSessionID(),
@@ -800,7 +802,8 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
             interruption: await app.interruption(for: session.id), autoResume: nil,
             active: running || externallyLive, turnOpen: running, queue: held.queue,
             queuePaused: held.paused, scheduleID: await session.scheduleID,
-            retry: running ? await session.retryWait : nil)
+            retry: running ? await session.retryWait : nil, chapters: chapters.chapters,
+            chaptersRevision: chapters.revision)
     }
 
     @Sendable func resolveGitDirectory(_ request: Request, app: App) async -> String? {
