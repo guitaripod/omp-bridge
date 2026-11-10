@@ -106,7 +106,8 @@ enum TranscriptLoader {
                             break
                         }
                     }
-                    guard !parts.isEmpty else { continue }
+                    let failure = OmpSession.failure(of: message)
+                    guard !parts.isEmpty || failure != nil else { continue }
                     let usage = message["usage"]
                     let counts = TokenCounts(
                         input: usage?["input"]?.intValue ?? 0,
@@ -118,7 +119,7 @@ enum TranscriptLoader {
                             id: "a-\(value["id"]?.stringValue ?? UUID().uuidString)",
                             role: .assistant, parts: parts, createdAt: timestamp, seconds: nil,
                             model: qualifiedModel(in: message), usage: counts, context: counts,
-                            costUSD: usage?["cost"]?["total"]?.doubleValue))
+                            costUSD: usage?["cost"]?["total"]?.doubleValue, error: failure))
                 case "toolResult":
                     guard let callID = message["toolCallId"]?.stringValue ?? message["toolCallID"]?.stringValue else { continue }
                     let output = blocks(message["content"]).compactMap { block -> String? in

@@ -1182,6 +1182,34 @@ actor OmpSession {
         return assembled
     }
 
+    /// The provider's reason an answer failed, when it did: an `error` stop with its message. An
+    /// abort is the person's Stop, not a failure, and says nothing here.
+    static func failure(of message: JSONValue) -> String? {
+        guard message["stopReason"]?.stringValue == "error",
+            let reason = message["errorMessage"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !reason.isEmpty
+        else { return nil }
+        return reason
+    }
+
+    /// Puts a failure on the answer it ended, or — when the turn failed before it said anything —
+    /// on an answer of its own, so the conversation keeps the failed turn rather than a prompt left
+    /// hanging.
+    private func keepFailure(_ reason: String, on assembled: Message?) -> Message {
+        if let assembled, let index = messages.lastIndex(where: { $0.id == assembled.id }) {
+            messages[index].error = reason
+            return messages[index]
+        }
+        let failed = Message(
+            id: "a-\(UUID().uuidString.prefix(8))", role: .assistant, parts: [], createdAt: Date(),
+            seconds: turnStartedAt.map { Date().timeIntervalSince($0) }, model: liveModel,
+            usage: nil, context: nil, costUSD: nil, error: reason)
+        messages.append(failed)
+        touch()
+        return failed
+    }
+
     private func liveMessageSnapshot(final: Bool = false) -> Message? {
         guard let id = liveMessageID, let created = liveCreatedAt else { return nil }
         return Message(
@@ -1660,13 +1688,14 @@ actor OmpSession {
         switch role {
         case "assistant":
             finalizeAssistant(message)
-            if let assembled = closeLiveMessage() {
-                await publish(.messageUpserted(assembled))
+            let failure = Self.failure(of: message)
+            var assembled = closeLiveMessage()
+            if let failure {
+                turnLastErrorMessage = failure
+                assembled = keepFailure(failure, on: assembled)
             }
-            if let errorMessage = message["errorMessage"]?.stringValue,
-                message["stopReason"]?.stringValue == "error"
-            {
-                turnLastErrorMessage = errorMessage
+            if let assembled {
+                await publish(.messageUpserted(assembled))
             }
         default:
             break

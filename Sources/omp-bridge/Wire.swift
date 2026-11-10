@@ -96,6 +96,9 @@ struct Message: Codable, Sendable {
     /// as claude-bridge's, so the Kit reads both the same way.
     var context: TokenCounts?
     var costUSD: Double?
+    /// Why the turn this answer belongs to failed — the provider's own words — kept on the message
+    /// so a client that opens the chat afterwards sees a failed turn, not a prompt nobody answered.
+    var error: String? = nil
 }
 
 struct Session: Codable, Sendable {
