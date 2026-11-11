@@ -14,7 +14,9 @@ conversation, and exposes them as plain HTTP + Server-Sent Events.
 | Handshake | `GET /health`, `GET /status` (`agent: "omp"`, `proto: 2`) |
 | Streaming | `GET /stream` (sequenced, replayable, epoch-cursored), `GET /sessions/:id/events` |
 | Sessions | `GET/POST /sessions`, `GET/PATCH/DELETE /sessions/:id`, `/revision`, `/wait`, `/message`, `/abort`, `/clear`, `/fork` |
+| Queue | `GET/POST /sessions/:id/queue`, `PATCH/DELETE /sessions/:id/queue/:qid`, `POST /sessions/:id/queue/resume` |
 | Interruptions | `GET /sessions/:id/interruption`, `/resume`, `/interruption/dismiss`, `/auto-resume` |
+| Schedules | `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/:id`, `POST /schedules/:id/run` |
 | Subagents | `GET /sessions/:id/agents[/:agentID]` |
 | Money | `GET /sessions/:id/usage`, `GET /sessions/:id/spend`, `GET /analytics?days=N` |
 | Models | `GET /models` (omp's own catalog: provider, thinking levels, context window; cached 5 min) |
@@ -26,7 +28,8 @@ conversation, and exposes them as plain HTTP + Server-Sent Events.
 | Update | `GET/POST /update`, `POST /update/restart`, `POST /update/auto` |
 
 Everything is read-only or conversational; nothing stages, commits, pushes or deletes outside
-its own state directory. 404 means *this server cannot say*.
+its own state directory. 404 means *this server cannot say*. Push notifications, Live Activities
+and plan gauges are not omp's to give: those routes answer `501` or `404` rather than pretending.
 
 ## Mapping omp → wire
 
@@ -43,6 +46,16 @@ its own state directory. 404 means *this server cannot say*.
   a message is intercepted and run through omp's own `compact` command with the instructions.
 - Cost comes from omp itself (`usage.cost.total` per assistant message) — spend reports are
   sums of what the engine reported, always marked `estimated`.
+- A turn oh-my-pi ended with an error keeps the provider's own words on the answer
+  (`Message.error`), live and when the transcript is read back, so a chat opened after a
+  refused turn shows that failure rather than a prompt nobody answered.
+- Chapters work as claude-bridge's do: every third of the person's messages the engine looks at
+  whether the chat's name still fits, a move opens a chapter where the topic turned and sums up
+  the one it closed, and a chat with six or more of the person's messages and none is split once
+  on its first read. A name the person gave the chat stays; the chapters still follow the topic
+  under it.
+  Sessions serve `chapters` and `chaptersRevision`, the stream a `chapters` frame, and
+  `/status` reports `chapters: 1`.
 - Sessions omp wrote itself (terminal runs) are discovered under `~/.omp/agent/sessions`,
   listed alongside managed ones, and adopted on first open without changing their identity.
   Deleting hides rather than destroys.
@@ -54,7 +67,7 @@ curl -fsSL https://raw.githubusercontent.com/guitaripod/omp-bridge/master/instal
 ```
 
 Requirements: Linux (x86_64 or aarch64, glibc 2.35 or newer, which is every mainstream
-distribution since 2022) or macOS 14+ on Apple silicon, `curl`, and
+distribution since 2022) or macOS 15+ on Apple silicon, `curl`, and
 [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`). **No Swift toolchain and no `git`**: the
 installer downloads a prebuilt program, checks its SHA-256 (integrity; the download itself is
 HTTPS from GitHub), installs `~/.local/bin/omp-bridge`, stamps `~/.omp-bridge/build.json` and
@@ -101,7 +114,7 @@ username is convention (`omp`) and any value is accepted.
 | `OMP_TAILSCALE` | found on the PATH and in the usual places | `tailscale` program `pair` and the installer ask for the machine's name |
 | `OMP_MODEL` | omp's default | default model for new sessions |
 | `OMP_EFFORT` | `medium` | default effort/thinking level |
-| `OMP_TITLE_MODEL` | the session's model | model that writes a conversation's title |
+| `OMP_TITLE_MODEL` | the session's model | model that names a conversation, checks its title and splits its chapters |
 | `OMP_WAIT_MAX` | `10800` (3h) | seconds `GET /sessions/:id/wait` holds before answering `running` |
 
 ## Waiting on a turn
@@ -131,8 +144,14 @@ than holding the connection forever. A client that disconnects ends its own hold
 notices on the next write and drops the loop. Two clients waiting on the same session at once is
 ordinary, and each gets its own answer the moment the session settles.
 
-`GET /status` carries `turnWait: 1`, the protocol version of this route, so a client can tell
-"too old to have this" from "session not found" without probing blind.
+`?until=settled` holds past the turn's end until the conversation's work is over: no turn, no
+queued prompt waiting to start one, no sub-agent still at work, and ten seconds of quiet. The
+answer says `"settled": true`, and `duration` and `toolCount` cover the whole stretch, so a phone
+says one piece of work is done once rather than once per turn.
+
+`GET /status` carries `turnWait: 2`, the protocol version of this route, so a client can tell
+"too old to have this" from "session not found" without probing blind; `/status` also reports
+`marks`, `queue`, `schedules`, `detail`, `chapters` and the door that admitted the request.
 
 ## Shared queue
 
