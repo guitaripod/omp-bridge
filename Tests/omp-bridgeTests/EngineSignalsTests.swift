@@ -86,10 +86,14 @@ import Testing
                     ]),
                 ]),
             ]))
-        try await Task.sleep(for: .milliseconds(1500))
-        let announced = await frames(hub).compactMap { event -> [SubagentSummary]? in
-            if case .agents(_, let agents) = event { return agents }
-            return nil
+        var announced: [[SubagentSummary]] = []
+        for _ in 0..<200 {
+            announced = await frames(hub).compactMap { event -> [SubagentSummary]? in
+                if case .agents(_, let agents) = event { return agents }
+                return nil
+            }
+            if announced.count >= 2 { break }
+            try await Task.sleep(for: .milliseconds(50))
         }
         #expect(announced.count == 2)
         #expect(announced.last?.first?.toolCount == 7)

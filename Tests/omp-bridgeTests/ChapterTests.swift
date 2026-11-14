@@ -271,7 +271,7 @@ private struct TwoFacedOmp {
             #!/bin/sh
             if [ "$1" = "-p" ]; then
               head -n 1 "\(replies)" | tr '~' '\n'
-              sed -i 1d "\(replies)"
+              tail -n +2 "\(replies)" > "\(replies).next" && mv "\(replies).next" "\(replies)"
               exit 0
             fi
             echo '{"type":"ready","supportedProtocolVersions":[1]}'
