@@ -4,6 +4,17 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.14.0 — 2026-11-14
+
+- Idle conversations let their oh-my-pi go. An engine stayed in memory, a few hundred megabytes each, for every chat used since the bridge last started; now one that has been idle for 30 minutes is stopped, at most four idle ones are kept, and one with background work still running is never touched. The next message starts it again on the same conversation in a second or two. `OMP_PROCESS_TTL` and `OMP_PROCESS_POOL` change the keep.
+- `/clear` really starts over. It used to empty only the app's view: the model still remembered everything, and the old messages came back after the next reply or a restart. The engine now starts a fresh conversation, and the old one is not listed as a chat of its own.
+- A turn cut off by a crash or a restart is marked as interrupted again, as the app expects, so you can pick it back up. The record the bridge keeps of turns in flight was written in one date format and read in another, so it always read as empty and every write threw away the other chats' turns.
+- Opening a chat no longer starts a whole engine just to check you are signed in. The answer is kept for five minutes and shared by everything asking at once, a sign-in made through the app shows at once, and a check that fails no longer reports you signed out.
+- An idle bridge spends about a tenth of the CPU it did, because it no longer looks up file owners every second while checking which conversations changed.
+- A search or an analytics request with an out-of-range number no longer crashes the bridge.
+- A scheduled run that waits behind another turn is no longer marked done when that turn ends, and a queue whose next item could not start is paused where the app shows it instead of sitting stuck.
+- Smaller fixes: an engine that died during a compaction no longer lets an update restart the bridge in the middle of another chat's turn, Stop can no longer close a turn that started just after it, an attachment whose name holds a slash is no longer dropped, a sign-in left unfinished frees its engine after 15 minutes, and turning automatic updates on or off with a malformed request is refused instead of switching them off.
+
 ## 0.13.1 — 2026-11-14
 
 - The bridge no longer runs out of file descriptors and stops answering. Every oh-my-pi it started, the sign-in check that runs every minute among them, left a pipe open after it exited, so within about a day and a half on Linux the bridge could take half a minute to answer and the app showed the machine as unreachable for a few seconds at a time. An engine's pipes are closed the moment it ends now.
