@@ -25,9 +25,7 @@ private struct FakeOmp {
               printf '{"type":"response","id":"%s","command":"%s","success":true,"data":{}}\\n' "$id" "$cmd"
             done
             """
-        try body.write(toFile: binary, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755], ofItemAtPath: binary)
+        try writeExecutable(body, to: binary)
     }
 
     var config: Config {

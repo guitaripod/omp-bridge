@@ -5,9 +5,12 @@ import Testing
 
 @Suite struct ProtocolTests {
     @Test func lineReaderSplitsLines() throws {
-        let pipe = Pipe()
-        pipe.fileHandleForWriting.write(Data("one\ntwo\npartial".utf8))
-        try pipe.fileHandleForWriting.close()
+        let pipe = try Spawning.serialized {
+            let pipe = Pipe()
+            pipe.fileHandleForWriting.write(Data("one\ntwo\npartial".utf8))
+            try pipe.fileHandleForWriting.close()
+            return pipe
+        }
         let reader = LineReader(handle: pipe.fileHandleForReading)
         #expect(reader.nextLine() == "one")
         #expect(reader.nextLine() == "two")

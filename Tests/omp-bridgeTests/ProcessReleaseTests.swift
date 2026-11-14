@@ -25,8 +25,7 @@ import Testing
                 echo '{"type":"ready","supportedProtocolVersions":[1]}'
                 while IFS= read -r line; do exit 0; done
                 """
-            try body.write(toFile: binary, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary)
+            try writeExecutable(body, to: binary)
             let engine = OmpProcess(ompBin: binary, directory: root) { _ in }
             try await engine.start()
             let pid = try #require(await engine.processID)
@@ -47,16 +46,35 @@ import Testing
         #endif
     }
 
+    @Test func aProgramBusyForAMomentIsStillRun() async throws {
+        let path = makeTempDir("busy-program") + "/program"
+        try writeExecutable("#!/bin/sh\nexit 0\n", to: path)
+        let writer = Spawning.serialized { open(path, O_WRONLY) }
+        #expect(writer >= 0)
+        Thread.detachNewThread {
+            usleep(60_000)
+            close(writer)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        try process.runAllowingBusyExecutable()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+    }
+
     private func startExitingChild(watch: Watch) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", "echo done"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
         process.terminationHandler = { $0.releaseFinished() }
+        let pipe = try Spawning.serialized {
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            try process.runAllowingBusyExecutable()
+            return pipe
+        }
         watch.process = process
         watch.pipe = pipe
-        try process.run()
         _ = pipe.fileHandleForReading.readDataToEndOfFile()
     }
 

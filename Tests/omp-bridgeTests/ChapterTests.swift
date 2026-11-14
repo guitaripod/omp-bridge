@@ -28,8 +28,7 @@ private func conversation(_ count: Int) -> [Message] {
 private func fakeOmp(in dir: String, reply: String) throws -> String {
     let path = dir + "/omp"
     let script = "#!/bin/sh\ncat <<'REPLY'\n\(reply)\nREPLY\n"
-    try Data(script.utf8).write(to: URL(fileURLWithPath: path))
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+    try writeExecutable(script, to: path)
     return path
 }
 
@@ -282,8 +281,7 @@ private struct TwoFacedOmp {
               printf '{"type":"response","id":"%s","command":"%s","success":true,"data":{}}\\n' "$id" "$cmd"
             done
             """
-        try body.write(toFile: binary, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary)
+        try writeExecutable(body, to: binary)
     }
 
     func lineUp(_ lines: [String]) throws {

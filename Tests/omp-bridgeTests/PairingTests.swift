@@ -21,8 +21,7 @@ private enum FakeTailscale {
     static let script: URL = {
         let url = makeTemporaryDirectory("fake-tailscale").appendingPathComponent("tailscale")
         let body = "#!/bin/sh\ncat \"$(dirname \"$0\")/status.json\"\nexit \"$(cat \"$(dirname \"$0\")/status.exit\")\"\n"
-        try? body.write(to: url, atomically: true, encoding: .utf8)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        try? writeExecutable(body, to: url.path)
         return url
     }()
 }

@@ -36,7 +36,7 @@ func run(
     var launchError = ""
     for _ in 0..<5 where !launched {
         do {
-            try process.run()
+            try process.runAllowingBusyExecutable()
             launched = true
         } catch {
             launchError = "\(error)"
@@ -110,7 +110,7 @@ final class ReleaseWorld: @unchecked Sendable {
         ]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try? process.run()
+        try? process.runAllowingBusyExecutable()
         var found = 0
         for _ in 0..<100 {
             if let text = try? String(contentsOf: portFile, encoding: .utf8), let number = Int(text) {
@@ -170,9 +170,9 @@ final class ReleaseWorld: @unchecked Sendable {
         let work = makeTemporaryDirectory("publish")
         defer { try? FileManager.default.removeItem(at: work) }
         let program = work.appendingPathComponent("omp-bridge")
-        try? "#!/bin/sh\ncase \"${1:-}\" in --version) echo \"omp-bridge \(version)\" ;; esac\n"
-            .write(to: program, atomically: true, encoding: .utf8)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        try? writeExecutable(
+            "#!/bin/sh\ncase \"${1:-}\" in --version) echo \"omp-bridge \(version)\" ;; esac\n",
+            to: program.path)
         let notes = work.appendingPathComponent("CHANGELOG.md")
         try? changelog.write(to: notes, atomically: true, encoding: .utf8)
         var packaged = Ran(status: 1, output: "")

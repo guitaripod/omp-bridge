@@ -94,20 +94,6 @@ enum JSONValue: Sendable {
     }
 }
 
-extension Process {
-    /// Lets go of a child that has exited, with the pipes it was given. Foundation on Linux keeps a
-    /// finished `Process` alive until `waitUntilExit()` is called on it, because that call is the
-    /// only place the run-loop source retaining it is dropped; a bridge that never called it kept
-    /// every engine it had started, the minute's sign-in probe among them, and each one's stdout
-    /// pipe, until the descriptor table was full and the server could no longer accept a
-    /// connection. Called from a termination handler, which runs once the child is gone, it
-    /// returns at once; call it from nowhere else that may also wait, since two waits race on the
-    /// same source.
-    func releaseFinished() {
-        waitUntilExit()
-    }
-}
-
 enum OmpInboundFrame: Sendable {
     case ready(protocolVersions: [Int], maxFrameBytes: Int)
     case response(OmpRPCResponse)
@@ -164,16 +150,19 @@ actor OmpProcess {
         env.merge(extraEnv) { _, new in new }
         env["PATH"] = Self.pathReachingRuntime(of: ompBin, base: env["PATH"])
         p.environment = env
-        let outPipe = Pipe()
-        let inPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardInput = inPipe
         p.standardError = FileHandle.nullDevice
         p.terminationHandler = { [weak self] exited in
             exited.releaseFinished()
             Task { await self?.terminated() }
         }
-        try p.run()
+        let (outPipe, inPipe) = try Spawning.serialized { () throws -> (Pipe, Pipe) in
+            let outPipe = Pipe()
+            let inPipe = Pipe()
+            p.standardOutput = outPipe
+            p.standardInput = inPipe
+            try p.runAllowingBusyExecutable()
+            return (outPipe, inPipe)
+        }
         process = p
         stdinHandle = inPipe.fileHandleForWriting
         isRunning = true

@@ -122,13 +122,17 @@ enum Shell {
         process.executableURL = url
         process.arguments = arguments
         if let cwd { process.currentDirectoryURL = URL(fileURLWithPath: cwd) }
-        let pipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = pipe
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_TERMINAL_PROMPT"] = "0"
         process.environment = environment
-        guard (try? process.run()) != nil else { return "could not run \(executable)" }
+        let launched = try? Spawning.serialized {
+            let pipe = Pipe()
+            process.standardError = pipe
+            try process.runAllowingBusyExecutable()
+            return pipe
+        }
+        guard let pipe = launched else { return "could not run \(executable)" }
         let output = Output()
         let handle = pipe.fileHandleForReading
         let finished = DispatchSemaphore(value: 0)
@@ -153,13 +157,17 @@ enum Shell {
         process.executableURL = url
         process.arguments = arguments
         if let cwd { process.currentDirectoryURL = URL(fileURLWithPath: cwd) }
-        let pipe = Pipe()
-        process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_TERMINAL_PROMPT"] = "0"
         process.environment = environment
-        guard (try? process.run()) != nil else { return Data() }
+        let launched = try? Spawning.serialized {
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            try process.runAllowingBusyExecutable()
+            return pipe
+        }
+        guard let pipe = launched else { return Data() }
         let output = Output()
         let handle = pipe.fileHandleForReading
         let finished = DispatchSemaphore(value: 0)
@@ -198,7 +206,7 @@ enum Shell {
         for (key, value) in environment { merged[key] = value }
         process.environment = merged
         process.terminationHandler = { $0.releaseFinished() }
-        try? process.run()
+        try? process.runAllowingBusyExecutable()
     }
 
     static func which(_ executable: String) -> URL? {

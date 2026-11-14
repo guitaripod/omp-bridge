@@ -52,9 +52,12 @@ private func quiet(_ service: UpdateService) async {
         let reported = Process()
         reported.executableURL = installed.program
         reported.arguments = ["--version"]
-        let pipe = Pipe()
-        reported.standardOutput = pipe
-        try reported.run()
+        let pipe = try Spawning.serialized {
+            let pipe = Pipe()
+            reported.standardOutput = pipe
+            try reported.runAllowingBusyExecutable()
+            return pipe
+        }
         reported.waitUntilExit()
         #expect(String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == "omp-bridge 1.1.0\n")
         #expect(installed.contents("build.json")?.contains("\"version\":\"1.1.0\"") == true)
