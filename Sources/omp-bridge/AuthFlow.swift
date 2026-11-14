@@ -38,6 +38,9 @@ actor AuthFlow {
     private var lastAuthCheck = Date.distantPast
     private var lastAuthenticated = false
     private var pendingInputID: String?
+    private var knownProviders: (providers: [AuthStatusDTO.ProviderDTO], at: Date)?
+    private var providerProbe: Task<[AuthStatusDTO.ProviderDTO]?, Never>?
+    private var providerGeneration = 0
 
     init(config: Config) {
         self.config = config
@@ -59,6 +62,7 @@ actor AuthFlow {
     }
 
     func status() async -> AuthStatusDTO {
+        if loginProcess != nil { forgetProviders() }
         let providers = await providerStates()
         let loggedIn = providers.contains(where: \.authenticated)
         let pending = pendingURL.map { url in
@@ -80,7 +84,9 @@ actor AuthFlow {
         }
         try await process.start()
         loginProcess = process
-        pendingStartedAt = Date()
+        let startedAt = Date()
+        pendingStartedAt = startedAt
+        abandon(loginStartedAt: startedAt)
         if let wanted, !wanted.isEmpty {
             _ = await process.request("login", fields: ["providerId": wanted], timeout: 20)
         } else {
@@ -127,6 +133,7 @@ actor AuthFlow {
             "id": requestID, "type": "extension_ui_response", "value": code,
         ])
         pendingInputID = nil
+        forgetProviders()
         return await status()
     }
 
@@ -135,6 +142,31 @@ actor AuthFlow {
         loginProcess = nil
         pendingURL = nil
         pendingStartedAt = nil
+        pendingInputID = nil
+        forgetProviders()
+    }
+
+    /// A sign-in nobody finished holds a whole engine open; it is let go once it has waited
+    /// ``loginPatience``, unless a newer sign-in has replaced it by then.
+    private func abandon(loginStartedAt startedAt: Date) {
+        Task {
+            try? await Task.sleep(for: .seconds(Self.loginPatience))
+            guard pendingStartedAt == startedAt else { return }
+            await cancelLogin()
+        }
+    }
+
+    private static let loginPatience: TimeInterval = 15 * 60
+
+    /// How long a reading of the login providers is trusted. Asking costs a whole engine start, a
+    /// second of a core and a few hundred megabytes, and every chat a client opens asks; a sign-in
+    /// made through this bridge forgets the reading at once, and one made in a terminal shows
+    /// within this long.
+    private static let providersFresh: TimeInterval = 5 * 60
+
+    private func forgetProviders() {
+        knownProviders = nil
+        providerGeneration += 1
     }
 
     /// The auth probe only asks omp for its login providers, so it starts omp without skills:
@@ -143,18 +175,41 @@ actor AuthFlow {
     /// cold-starting that model on the GPU for nothing.
     static let probeArguments = ["--no-skills"]
 
+    /// The login providers as last read, read again once the reading is older than
+    /// ``providersFresh``. Callers asking at the same moment share one engine start, and a probe
+    /// that fails keeps the last good reading rather than calling a signed-in machine signed out.
     private func providerStates() async -> [AuthStatusDTO.ProviderDTO] {
+        if let known = knownProviders, Date().timeIntervalSince(known.at) < Self.providersFresh {
+            return known.providers
+        }
+        let probe: Task<[AuthStatusDTO.ProviderDTO]?, Never>
+        if let running = providerProbe {
+            probe = running
+        } else {
+            probe = Task { await self.probeProviders() }
+            providerProbe = probe
+        }
+        let generation = providerGeneration
+        let fresh = await probe.value
+        providerProbe = nil
+        if let fresh, generation == providerGeneration {
+            knownProviders = (fresh, Date())
+        }
+        return fresh ?? knownProviders?.providers ?? []
+    }
+
+    private func probeProviders() async -> [AuthStatusDTO.ProviderDTO]? {
         let probe = OmpProcess(
             ompBin: config.ompBin, directory: config.workdir, arguments: Self.probeArguments
         ) { _ in }
         do {
             try await probe.start()
         } catch {
-            return []
+            return nil
         }
         let response = await probe.request("get_login_providers", timeout: 20)
         defer { Task { await probe.stop() } }
-        guard response.success, let list = response.data?["providers"]?.arrayValue else { return [] }
+        guard response.success, let list = response.data?["providers"]?.arrayValue else { return nil }
         return list.compactMap { entry in
             guard let id = entry["id"]?.stringValue else { return nil }
             return AuthStatusDTO.ProviderDTO(
