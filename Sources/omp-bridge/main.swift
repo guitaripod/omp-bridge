@@ -108,12 +108,25 @@ struct BasicAuthMiddleware<Context: RequestContext>: RouterMiddleware {
         _ request: Request, context: Context,
         next: (Request, Context) async throws -> Response
     ) async throws -> Response {
-        guard suppliedPassword(request) == password else {
+        guard Self.matches(suppliedPassword(request), password) else {
             var headers = HTTPFields()
             headers[.wwwAuthenticate] = "Basic realm=\"omp-bridge\""
             return Response(status: .unauthorized, headers: headers)
         }
         return try await next(request, context)
+    }
+
+    /// Compares every byte whatever the first difference, so how long a wrong password takes to
+    /// refuse says nothing about how much of it was right.
+    static func matches(_ supplied: String?, _ expected: String) -> Bool {
+        guard let supplied else { return false }
+        let given = Array(supplied.utf8)
+        let wanted = Array(expected.utf8)
+        var difference: UInt8 = given.count == wanted.count ? 0 : 1
+        for index in 0..<max(given.count, wanted.count) {
+            difference |= (index < given.count ? given[index] : 0) ^ (index < wanted.count ? wanted[index] : 0)
+        }
+        return difference == 0
     }
 
     private func suppliedPassword(_ request: Request) -> String? {
