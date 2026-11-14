@@ -150,4 +150,14 @@ private func gone(_ pid: Int) async -> Bool {
         #expect(await journal.interruptedEntries().isEmpty)
     }
 
+    @Test func clientNumbersAndNamesAreHeldInBounds() {
+        #expect((-1).clamped(to: 1...200) == 1)
+        #expect(Int.min.clamped(to: 1...366) == 1)
+        #expect(Int.max.clamped(to: 1...366) == 366)
+        #expect(40.clamped(to: 1...200) == 40)
+        #expect(AttachmentStore.storedName("shots/../my photo#1.png") == "my-photo-1.png")
+        #expect(AttachmentStore.storedName(nil) == "file.bin")
+        #expect(AttachmentStore.storedName("..") == "file.bin")
+        #expect(AttachmentStore.storedName(String(repeating: "a", count: 300)).count == 96)
+    }
 }

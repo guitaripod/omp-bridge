@@ -118,6 +118,18 @@ enum QueueFile {
 
 /// Writes uploaded attachments under the bridge's attachments directory, one folder per session.
 enum AttachmentStore {
+    /// The client's filename reduced to what a file name and a URL path segment can both carry:
+    /// a slash in it made the write fail and the image was dropped from the message unannounced,
+    /// and a space or a `#` broke the link the attachment is served back from. The name the
+    /// person gave stays on the attachment for display.
+    static func storedName(_ filename: String?) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        let last = (filename ?? "").split(separator: "/").last.map(String.init) ?? ""
+        let cleaned = String(last.map { allowed.contains($0) ? $0 : "-" }.prefix(96))
+        return cleaned.trimmingCharacters(in: CharacterSet(charactersIn: ".-")).isEmpty
+            ? "file.bin" : cleaned
+    }
+
     static func save(
         _ attachments: [SendAttachment], sessionID: String, directory: String
     ) -> [StoredAttachment] {
@@ -128,7 +140,7 @@ enum AttachmentStore {
         for attachment in attachments {
             guard let data = Data(base64Encoded: attachment.dataBase64) else { continue }
             let name =
-                "\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8))-\(attachment.filename ?? "file.bin")"
+                "\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8))-\(Self.storedName(attachment.filename))"
             let path = "\(dir)/\(name)"
             guard (try? data.write(to: URL(fileURLWithPath: path))) != nil else { continue }
             stored.append(
