@@ -141,7 +141,8 @@ struct Session: Codable, Sendable {
     var summary: SessionSummary {
         SessionSummary(
             id: id, title: title, directory: directory, model: model, effort: effort,
-            createdAt: createdAt, updatedAt: updatedAt, scheduled: scheduleID == nil ? nil : true)
+            createdAt: createdAt, updatedAt: updatedAt, scheduled: scheduleID == nil ? nil : true,
+            lastWords: LastWords.quote(in: messages))
     }
 }
 
@@ -192,6 +193,10 @@ struct SessionSummary: Codable, Sendable, Equatable {
     var readAt: Date?
     /// A schedule made this conversation and runs into it.
     var scheduled: Bool? = nil
+    /// The first words of the answer that closed the last turn, for a row nobody has read yet, in
+    /// claude-bridge's field and meaning. Absent while a turn is open, once the chat has been
+    /// read, and on a chat that has not moved in ``LastWords/window``.
+    var lastWords: String? = nil
 }
 
 struct SubagentSummary: Codable, Sendable, Equatable {

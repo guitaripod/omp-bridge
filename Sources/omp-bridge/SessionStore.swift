@@ -104,7 +104,7 @@ actor SessionStore {
     /// store has never adopted.
     func stampingMarks(_ summaries: [SessionSummary], now: Date = Date()) -> [SessionSummary] {
         if marks.noteListed(summaries.map(\.id), now: now) { marksDirty = true }
-        return summaries.map { marks.stamping($0) }
+        return summaries.map { marks.stamping($0, now: now) }
     }
 
     /// Forgets the marks of conversations nothing has listed for a month, and writes down the

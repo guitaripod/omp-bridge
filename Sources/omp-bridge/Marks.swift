@@ -109,9 +109,12 @@ struct MarksLedger: Sendable, Equatable {
 
     /// The summary with all five marks stamped on. `pinned` and `archived` are always present,
     /// because their presence is how a client tells *not pinned* from *this bridge cannot say*.
-    func stamping(_ summary: SessionSummary) -> SessionSummary {
+    func stamping(_ summary: SessionSummary, now: Date = Date()) -> SessionSummary {
         let marks = entries[summary.id]
         var stamped = summary
+        if !LastWords.mayBeUnread(updatedAt: summary.updatedAt, readAt: marks?.readAt, now: now) {
+            stamped.lastWords = nil
+        }
         stamped.saved = marks?.saved?.on ?? false
         stamped.pinned = marks?.pinned?.on ?? false
         stamped.pinnedAt = stamped.pinned == true ? marks?.pinned?.at : nil

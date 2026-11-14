@@ -213,7 +213,8 @@ actor OmpSession {
             active: (running || externallyLive) ? true : nil,
             interrupted: nil,
             agents: activeAgentCount > 0 ? activeAgentCount : nil,
-            scheduled: scheduleID == nil ? nil : true)
+            scheduled: scheduleID == nil ? nil : true,
+            lastWords: (running || externallyLive) ? nil : LastWords.quote(in: messages))
     }
 
     /// The schedule this conversation runs for, when a schedule made it.
