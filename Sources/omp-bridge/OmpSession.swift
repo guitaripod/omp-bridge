@@ -1780,6 +1780,19 @@ actor OmpSession {
         }
     }
 
+    /// Keeps the agents still at work and the most recent finished ones: every agents frame
+    /// carries the whole list, sorted, and a long chat would otherwise send every sub-agent it
+    /// ever ran on every change for the rest of its life.
+    private func forgetOldFinishedAgents() {
+        let finished = subagents.values.filter { !$0.active }
+        guard finished.count > Self.finishedAgentsKept else { return }
+        for state in finished.sorted(by: { $0.updatedAt > $1.updatedAt }).dropFirst(Self.finishedAgentsKept) {
+            subagents.removeValue(forKey: state.id)
+        }
+    }
+
+    private static let finishedAgentsKept = 50
+
     /// oh-my-pi's word on a sub-agent, which lives under `payload`: a lifecycle frame when one
     /// starts or ends, and a progress frame — keyed by the same id inside `progress` — whenever its
     /// tool count or current tool moves. Reading the frame's top level, as this once did, found
@@ -1817,6 +1830,7 @@ actor OmpSession {
         }
         state.updatedAt = now
         subagents[agentID] = state
+        if !state.active { forgetOldFinishedAgents() }
         let lifecycleMoved = known?.active != state.active
         let waited = now.timeIntervalSince(lastAgentsPublishAt)
         guard lifecycleMoved || waited >= Self.agentsFrameGap else {
