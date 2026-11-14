@@ -113,7 +113,7 @@ enum Git {
         if text.trimmedOrNil() == nil, !staged {
             text = Shell.run(
                 "git",
-                ["diff", "--no-color", "--no-ext-diff", "--no-index", "/dev/null", path],
+                ["diff", "--no-color", "--no-ext-diff", "--no-index", "--", "/dev/null", path],
                 cwd: root, timeout: 20)
         }
         var truncated = false
