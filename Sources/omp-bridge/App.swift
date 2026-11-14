@@ -284,6 +284,15 @@ actor App {
         }
     }
 
+    /// Clears a conversation and hides the transcript it leaves behind, which would otherwise be
+    /// listed as a chat of its own the moment the conversation stopped owning it.
+    func clear(_ session: OmpSession) async throws {
+        guard let retired = try await session.clear(),
+            retired != (await session.currentOmpSessionID())
+        else { return }
+        await store.hide(retired)
+    }
+
     func runReaper() async {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(60))

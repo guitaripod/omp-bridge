@@ -132,6 +132,12 @@ actor SessionStore {
 
     func isHidden(_ ompSessionID: String) -> Bool { hidden.contains(ompSessionID) }
 
+    func hide(_ ompSessionID: String) {
+        guard !hidden.contains(ompSessionID) else { return }
+        hidden.append(ompSessionID)
+        persistNow()
+    }
+
     func hiddenList() -> [String] { hidden }
 
     func allRecords() -> [SessionRecord] {

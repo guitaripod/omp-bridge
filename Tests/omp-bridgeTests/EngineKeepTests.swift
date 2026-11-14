@@ -96,6 +96,25 @@ private func gone(_ pid: Int) async -> Bool {
         #expect(await gone(pid))
     }
 
+    @Test func clearingPutsTheEngineOnAFreshTranscript() async throws {
+        let engine = try Engine()
+        let session = engine.session()
+        let pid = try #require(await session.ensureProcess().processID)
+        try await session.clear()
+        #expect(engine.requests().contains("new_session"))
+        #expect(await session.snapshotMessages().isEmpty)
+        await session.shutdown()
+        #expect(await gone(pid))
+    }
+
+    @Test func clearingWithoutAnEngineLeavesTheOldTranscriptBehind() async throws {
+        let engine = try Engine()
+        let session = engine.session(transcript: engine.root + "/old.jsonl")
+        try await session.clear()
+        #expect(await session.sessionFile() == nil)
+        #expect(!engine.requests().contains("new_session"))
+    }
+
     @Test func aTurnClearsOnlyItsOwnJournalEntry() async throws {
         let root = makeTempDir("journal")
         let journal = TurnJournal(path: root + "/turns.json")

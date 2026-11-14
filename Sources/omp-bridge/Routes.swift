@@ -578,7 +578,7 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     router.post("sessions/:id/clear") { _, context in
         do {
             let session = try await resolveSession(context)
-            try await session.clear()
+            try await app.clear(session)
             return jsonResponse(["ok": true])
         } catch { return sessionError(error) }
     }

@@ -1010,12 +1010,35 @@ actor OmpSession {
         return (true, newlyPaused)
     }
 
-    /// Empties the conversation. What comes next is named afresh, and the chapters go with what
-    /// they told.
-    func clear() async throws {
-        guard !running, queue.isEmpty else {
+    /// Empties the conversation and puts the engine on a fresh transcript, so the model forgets
+    /// what was cleared and the old rows are never read back in: emptying only the bridge's copy
+    /// left the engine holding the whole context and the next sweep re-adopting the transcript.
+    /// Without an engine, the next one simply starts fresh. Answers the transcript left behind,
+    /// for the caller to hide from the list. What comes next is named afresh, and the chapters go
+    /// with what they told. A prompt sent meanwhile waits in the queue and goes once it is done.
+    @discardableResult
+    func clear() async throws -> String? {
+        guard !busy, queue.isEmpty else {
             throw BridgeError.conflict(
                 "This session has a turn running. Stop it first, or fork to start clean without interrupting it.")
+        }
+        let retired = ompSessionID
+        starting = true
+        do {
+            try await startAfresh()
+        } catch {
+            starting = false
+            await drainQueue()
+            throw error
+        }
+        starting = false
+        lastTranscriptMtime = nil
+        transcriptBehind = false
+        transcriptActivity = TranscriptActivity()
+        externallyLive = false
+        if !subagents.isEmpty {
+            subagents.removeAll()
+            await publishAgents()
         }
         messages.removeAll()
         turns.removeAll()
@@ -1028,6 +1051,26 @@ actor OmpSession {
         chapters = []
         touch()
         if hadChapters { await publishChapters() }
+        await drainQueue()
+        return retired
+    }
+
+    private func startAfresh() async throws {
+        guard let engine = process, await engine.isRunning else {
+            ompSessionFile = nil
+            ompSessionID = nil
+            return
+        }
+        let fresh = await engine.request("new_session", timeout: 30)
+        guard fresh.success, fresh.data?["cancelled"]?.boolValue != true else {
+            throw BridgeError.conflict(
+                "oh-my-pi would not start the conversation afresh: \(fresh.error ?? "it declined")")
+        }
+        if !model.isEmpty { await applyModelOn(engine, model) }
+        if !effort.isEmpty {
+            _ = await engine.request("set_thinking_level", fields: ["level": effort])
+        }
+        await syncState(from: engine)
     }
 
     /// A manual compaction, run only between turns: oh-my-pi's `compact` aborts whatever turn
