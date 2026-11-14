@@ -137,8 +137,7 @@ enum Shell {
             finished.signal()
         }
         if finished.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            _ = finished.wait(timeout: .now() + 5)
+            end(process, finished: finished)
             return "timed out after \(Int(timeout))s"
         }
         process.waitUntilExit()
@@ -169,11 +168,22 @@ enum Shell {
             finished.signal()
         }
         if finished.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            _ = finished.wait(timeout: .now() + 5)
+            end(process, finished: finished)
+        } else {
+            process.waitUntilExit()
+        }
+        return output.data
+    }
+
+    /// Ends a child that outran its deadline and reaps it: SIGTERM first, SIGKILL for one still
+    /// there five seconds later, so the wait that lets Foundation release it is bounded even for a
+    /// child that ignores the polite signal.
+    private static func end(_ process: Process, finished: DispatchSemaphore) {
+        process.terminate()
+        if finished.wait(timeout: .now() + 5) == .timedOut, process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
         }
         process.waitUntilExit()
-        return output.data
     }
 
     static func spawn(_ executable: String, _ arguments: [String], environment: [String: String]) {
@@ -187,6 +197,7 @@ enum Shell {
         var merged = ProcessInfo.processInfo.environment
         for (key, value) in environment { merged[key] = value }
         process.environment = merged
+        process.terminationHandler = { $0.releaseFinished() }
         try? process.run()
     }
 

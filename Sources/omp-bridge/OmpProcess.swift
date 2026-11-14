@@ -94,6 +94,20 @@ enum JSONValue: Sendable {
     }
 }
 
+extension Process {
+    /// Lets go of a child that has exited, with the pipes it was given. Foundation on Linux keeps a
+    /// finished `Process` alive until `waitUntilExit()` is called on it, because that call is the
+    /// only place the run-loop source retaining it is dropped; a bridge that never called it kept
+    /// every engine it had started, the minute's sign-in probe among them, and each one's stdout
+    /// pipe, until the descriptor table was full and the server could no longer accept a
+    /// connection. Called from a termination handler, which runs once the child is gone, it
+    /// returns at once; call it from nowhere else that may also wait, since two waits race on the
+    /// same source.
+    func releaseFinished() {
+        waitUntilExit()
+    }
+}
+
 enum OmpInboundFrame: Sendable {
     case ready(protocolVersions: [Int], maxFrameBytes: Int)
     case response(OmpRPCResponse)
@@ -155,7 +169,8 @@ actor OmpProcess {
         p.standardOutput = outPipe
         p.standardInput = inPipe
         p.standardError = FileHandle.nullDevice
-        p.terminationHandler = { [weak self] _ in
+        p.terminationHandler = { [weak self] exited in
+            exited.releaseFinished()
             Task { await self?.terminated() }
         }
         try p.run()
@@ -188,6 +203,8 @@ actor OmpProcess {
         guard isRunning else { return }
         isRunning = false
         negotiated = true
+        try? stdinHandle?.close()
+        stdinHandle = nil
         let waiters = pending
         pending.removeAll()
         for task in timeouts.values { task.cancel() }
@@ -350,6 +367,7 @@ final class LineReader: @unchecked Sendable {
     private let handle: FileHandle
     private var buffer: [UInt8] = []
     private var searchFrom = 0
+    private var drained = false
 
     init(handle: FileHandle) {
         self.handle = handle
@@ -376,16 +394,24 @@ final class LineReader: @unchecked Sendable {
                 searchFrom = 0
                 return line.trimmingCharacters(in: .whitespacesAndNewlines)
             }
+            if drained { return nil }
             searchFrom = max(0, buffer.count - 1)
             let chunk = handle.availableData
-            if chunk.isEmpty {
-                if buffer.isEmpty { return nil }
-                let line = String(decoding: buffer, as: UTF8.self)
-                buffer = []
-                searchFrom = 0
-                return line
-            }
+            if chunk.isEmpty { return drain() }
             buffer.append(contentsOf: chunk)
         }
+    }
+
+    /// The engine closed its end: the descriptor is closed here and now rather than whenever the
+    /// last object holding the pipe goes, which on Linux can be never, and whatever the engine
+    /// wrote after its last newline is the final line.
+    private func drain() -> String? {
+        drained = true
+        try? handle.close()
+        guard !buffer.isEmpty else { return nil }
+        let line = String(decoding: buffer, as: UTF8.self)
+        buffer = []
+        searchFrom = 0
+        return line
     }
 }
