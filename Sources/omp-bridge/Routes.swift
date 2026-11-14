@@ -41,6 +41,15 @@ private func errorResponse(_ message: String, status: HTTPResponse.Status) -> Re
     return Response(status: status, headers: headers, body: .init(byteBuffer: buffer))
 }
 
+extension Int {
+    /// A count a client named, held inside what the route can serve: a negative one would trap the
+    /// whole daemon in an array prefix or a range, and an enormous one would parse every transcript
+    /// on the machine for one request.
+    func clamped(to range: ClosedRange<Int>) -> Int {
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
+}
+
 struct SendAccepted: Encodable {
     let ok = true
     let queued: Bool
@@ -300,7 +309,7 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         guard let query = request.uri.queryParameters.get("q"), !query.isEmpty else {
             return errorResponse("No query given", status: .badRequest)
         }
-        let limit = min(Int(request.uri.queryParameters.get("limit") ?? "") ?? 40, 200)
+        let limit = (Int(request.uri.queryParameters.get("limit") ?? "") ?? 40).clamped(to: 1...200)
         let response = await TranscriptSearch.search(
             root: config.ompSessionsRoot, query: query, limit: limit)
         return jsonResponse(response)
@@ -321,7 +330,7 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     }
 
     router.get("analytics") { request, _ in
-        let days = Int(request.uri.queryParameters.get("days") ?? "") ?? 30
+        let days = (Int(request.uri.queryParameters.get("days") ?? "") ?? 30).clamped(to: 1...366)
         var live: [OmpSession] = []
         for sessionID in await app.liveSessionIDs() {
             if let session = await app.liveSession(id: sessionID) { live.append(session) }
