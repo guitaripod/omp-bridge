@@ -579,8 +579,7 @@ actor App {
                 failedModelsAt = Date()
                 return []
             }
-            process = created
-            self.modelScratchProcess = created
+            process = await adoptScratch(created)
         }
         let response = await process.request("get_available_models", timeout: 120)
         guard response.success, let list = response.data?["models"]?.arrayValue else {
@@ -660,8 +659,7 @@ actor App {
                     Data("commands: scratch start failed: \(error)\n".utf8))
                 return cachedCommands[directory]?.commands ?? []
             }
-            process = created
-            if !owned { modelScratchProcess = created }
+            process = owned ? created : await adoptScratch(created)
         }
         let response = await process.request("get_available_commands", timeout: 60)
         if owned { await process.stop() }
@@ -677,6 +675,18 @@ actor App {
         let commands = CommandCatalog.parse(list)
         cachedCommands[directory] = (Date(), commands)
         return commands
+    }
+
+    /// The scratch engine the machine keeps, given one just started for it: the catalog of models
+    /// and the catalog of commands start one independently, and whichever lands second while the
+    /// other's start was awaited stops its own rather than leaving an engine nobody holds.
+    private func adoptScratch(_ created: OmpProcess) async -> OmpProcess {
+        if let existing = await modelScratchRunning() {
+            await created.stop()
+            return existing
+        }
+        modelScratchProcess = created
+        return created
     }
 
     private func modelScratchRunning() async -> OmpProcess? {
