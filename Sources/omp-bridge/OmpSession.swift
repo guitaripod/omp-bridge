@@ -1089,14 +1089,14 @@ actor OmpSession {
         starting = false
         let startedAt = Date()
         compactionStartedAt = startedAt
-        await quietRegistry.increment()
+        await holdQuietForCompaction()
         await publish(.compaction(phase: "started", error: nil))
         var fields: [String: any Sendable] = [:]
         if let instructions, !instructions.isEmpty { fields["customInstructions"] = instructions }
         let response = await proc.request("compact", fields: fields, timeout: 900)
         compacting = false
         compactionStartedAt = nil
-        await quietRegistry.decrement()
+        await releaseQuietForCompaction()
         if response.success {
             await recordCompaction(trigger: "manual", result: response.data, startedAt: startedAt)
             await publish(.compaction(phase: "finished", error: nil))
@@ -1104,6 +1104,24 @@ actor OmpSession {
             await publish(.compaction(phase: "failed", error: response.error))
         }
         await drainQueue()
+    }
+
+    /// Whether this conversation's compaction is counted in the machine's quiet registry. A
+    /// compaction can end three ways (its answer, oh-my-pi's own end frame, the engine dying), and
+    /// counting it once and uncounting it once, whichever comes first, keeps the registry from
+    /// reading quiet while another conversation's turn runs and an update restarts under it.
+    private var quietHeldForCompaction = false
+
+    private func holdQuietForCompaction() async {
+        guard !quietHeldForCompaction else { return }
+        quietHeldForCompaction = true
+        await quietRegistry.increment()
+    }
+
+    private func releaseQuietForCompaction() async {
+        guard quietHeldForCompaction else { return }
+        quietHeldForCompaction = false
+        await quietRegistry.decrement()
     }
 
     /// How many times, and how far apart, the transcript is re-read for the seam oh-my-pi
@@ -1656,7 +1674,7 @@ actor OmpSession {
             if compacting {
                 compacting = false
                 compactionStartedAt = nil
-                await quietRegistry.decrement()
+                await releaseQuietForCompaction()
                 await publish(.compaction(phase: "failed", error: "The oh-my-pi process exited"))
             }
             if running {
@@ -1690,6 +1708,7 @@ actor OmpSession {
             if frame["skipped"]?.boolValue != true {
                 compacting = true
                 compactionStartedAt = Date()
+                await holdQuietForCompaction()
                 await publish(.compaction(phase: "started", error: nil))
             }
         case "auto_compaction_end":
@@ -1697,6 +1716,7 @@ actor OmpSession {
             compacting = false
             let startedAt = compactionStartedAt ?? Date()
             compactionStartedAt = nil
+            await releaseQuietForCompaction()
             let failed = frame["aborted"]?.boolValue == true
             if !failed {
                 await recordCompaction(trigger: "auto", result: frame["result"], startedAt: startedAt)

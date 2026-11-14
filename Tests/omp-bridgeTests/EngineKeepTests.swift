@@ -115,6 +115,19 @@ private func gone(_ pid: Int) async -> Bool {
         #expect(!engine.requests().contains("new_session"))
     }
 
+    @Test func aCompactionIsCountedOnceHoweverItEnds() async throws {
+        let engine = try Engine()
+        let registry = QuietRegistry()
+        let session = engine.session(registry: registry)
+        await registry.increment()
+        await session.handleOmpEvent(.object(["type": .string("auto_compaction_start")]))
+        #expect(await registry.read().turns == 2)
+        await session.handleOmpEvent(.object(["type": .string("process_exited")]))
+        #expect(await registry.read().turns == 1)
+        await session.handleOmpEvent(.object(["type": .string("auto_compaction_end")]))
+        #expect(await registry.read().turns == 1)
+    }
+
     @Test func aTurnClearsOnlyItsOwnJournalEntry() async throws {
         let root = makeTempDir("journal")
         let journal = TurnJournal(path: root + "/turns.json")
