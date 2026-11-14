@@ -69,6 +69,9 @@ actor OmpSession {
     private(set) var compacting = false
     private var compactionStartedAt: Date?
     private var lastEventAt = Date.distantPast
+    /// The journal entry the open turn wrote, so the end of this turn clears that entry and never
+    /// the next turn's, which can be written before this turn's ending has finished publishing.
+    private var journalTurnID: String?
     /// The messages people queued behind the running turn, in arrival order. Held here rather
     /// than on each device so every client of the conversation sees and can change the same
     /// queue; a file in the state directory keeps it across a restart.
@@ -831,9 +834,11 @@ actor OmpSession {
         turnLastErrorMessage = nil
         await quietRegistry.increment()
         await publish(.status("running"))
+        let turnID = "t-\(UUID().uuidString.prefix(8))"
+        journalTurnID = turnID
         await journal?.write(
             JournalEntry(
-                turnID: "t-\(UUID().uuidString.prefix(8))", sessionID: id,
+                turnID: turnID, sessionID: id,
                 ompSessionFile: ompSessionFile, prompt: display, startedAt: Date(),
                 pid: await proc.processID))
         let requestID = await proc.reserveRequestID()
@@ -962,8 +967,9 @@ actor OmpSession {
         if shouldPause { queuePaused = true }
         if newlyPaused { await publishQueue() }
         guard running, let process else { return (false, newlyPaused) }
+        let stopping = turnStartedAt
         _ = await process.request("abort")
-        finishTurn(cause: .aborted)
+        if turnStartedAt == stopping { finishTurn(cause: .aborted) }
         return (true, newlyPaused)
     }
 
@@ -1304,14 +1310,16 @@ actor OmpSession {
         settleUnansweredAsk()
         let settled = settleDanglingTools()
         autoTitleIfUnnamed()
+        let finishedTurnID = journalTurnID
+        journalTurnID = nil
         Task {
             if waited { await publish(.retry(nil)) }
             if let unfinished { await publish(.messageUpserted(unfinished)) }
             for message in settled where message.id != unfinished?.id {
                 await publish(.messageUpserted(message))
             }
-            await publish(.status("idle"))
-            await journal?.clear(id)
+            if !running { await publish(.status("idle")) }
+            if let finishedTurnID { await journal?.clear(id, turnID: finishedTurnID) }
             await quietRegistry.decrement()
             await drainQueue()
         }

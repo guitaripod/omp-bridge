@@ -22,8 +22,9 @@ actor TurnJournal {
         save(all)
     }
 
-    func clear(_ sessionID: String) {
+    func clear(_ sessionID: String, turnID: String? = nil) {
         var all = readAll()
+        if let turnID, all[sessionID]?.turnID != turnID { return }
         all.removeValue(forKey: sessionID)
         save(all)
     }
@@ -35,9 +36,15 @@ actor TurnJournal {
         }
     }
 
+    /// Read with the date format ``save(_:)`` writes. Read with the default one, every entry failed
+    /// to decode: a turn killed by a crash or a restart was never recovered as an interruption,
+    /// and each write or clear rewrote the file with only its own entry, dropping every other
+    /// conversation's turn in flight.
     private func readAll() -> [String: JournalEntry] {
         guard let data = FileManager.default.contents(atPath: path) else { return [:] }
-        return (try? JSONDecoder().decode([String: JournalEntry].self, from: data)) ?? [:]
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([String: JournalEntry].self, from: data)) ?? [:]
     }
 
     private func save(_ all: [String: JournalEntry]) {
