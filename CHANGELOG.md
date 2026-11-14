@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.13.1 — 2026-11-14
+
+- The bridge no longer runs out of file descriptors and stops answering. Every oh-my-pi it started, the sign-in check that runs every minute among them, left a pipe open after it exited, so within about a day and a half on Linux the bridge could take half a minute to answer and the app showed the machine as unreachable for a few seconds at a time. An engine's pipes are closed the moment it ends now.
+
 ## 0.13.0 — 2026-11-10
 
 - Chapters, as claude-bridge keeps them. Every third message the engine looks at whether the chat still wears the right name; where the topic moved, the chat is renamed and a chapter opens at the message where it turned, and the chapter it closed gets one sentence saying what it came to. The app lists them in the chapters panel and marks each one in the conversation. A name you gave the chat stays; the chapters still follow the topic under it. A chat older than this with six or more messages is split into its chapters once, the first time it is opened. The looks run on the chat's own model (or `OMP_TITLE_MODEL`); a model that thinks out loud first is read past its thinking, a split that opens a chapter at nearly every message is not used, and one finer than a chapter per three messages is folded to that.
