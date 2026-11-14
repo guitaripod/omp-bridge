@@ -284,8 +284,10 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
     }
 
     router.post("update/auto") { request, _ in
-        let enabled = (try? await decodeBody(AutoResumeRequest.self, request).enabled) ?? false
-        return jsonResponse(await app.updateService.setAutomation(enabled: enabled))
+        guard let body = try? await decodeBody(AutoResumeRequest.self, request) else {
+            return errorResponse("Say whether to update on its own: {\"enabled\": true}", status: .badRequest)
+        }
+        return jsonResponse(await app.updateService.setAutomation(enabled: body.enabled))
     }
 
     // MARK: sessions
