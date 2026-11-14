@@ -116,6 +116,8 @@ username is convention (`omp`) and any value is accepted.
 | `OMP_EFFORT` | `medium` | default effort/thinking level |
 | `OMP_TITLE_MODEL` | the session's model | model that names a conversation, checks its title and splits its chapters |
 | `OMP_WAIT_MAX` | `10800` (3h) | seconds `GET /sessions/:id/wait` holds before answering `running` |
+| `OMP_PROCESS_TTL` | `1800` (30m) | seconds a conversation's engine is kept once nothing has happened on it |
+| `OMP_PROCESS_POOL` | `4` | idle engines kept at once; past this the longest-idle goes first |
 
 ## Waiting on a turn
 

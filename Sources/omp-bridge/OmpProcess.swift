@@ -190,6 +190,16 @@ actor OmpProcess {
 
     private func terminated() {
         guard isRunning else { return }
+        settle(because: "The oh-my-pi process exited")
+        // The session hears about it as one more event, so a turn the engine died under is
+        // closed the moment it happens rather than discovered by the next prompt.
+        let onEvent = self.onEvent
+        Task { await onEvent(.object(["type": .string("process_exited")])) }
+    }
+
+    /// Marks the engine gone and answers every request still waiting on it, so nobody sits out a
+    /// timeout of up to fifteen minutes for an engine that will never reply.
+    private func settle(because reason: String) {
         isRunning = false
         negotiated = true
         try? stdinHandle?.close()
@@ -201,25 +211,28 @@ actor OmpProcess {
         for (_, continuation) in waiters {
             continuation.resume(
                 returning: OmpRPCResponse(
-                    command: "process", success: false,
-                    error: "The oh-my-pi process exited", errorCode: nil, data: nil))
+                    command: "process", success: false, error: reason, errorCode: nil, data: nil))
         }
-        // The session hears about it as one more event, so a turn the engine died under is
-        // closed the moment it happens rather than discovered by the next prompt.
-        let onEvent = self.onEvent
-        Task { await onEvent(.object(["type": .string("process_exited")])) }
     }
 
+    /// Ends the engine on purpose: its stdin closes, which oh-my-pi takes as the end, then SIGTERM
+    /// after ten seconds and SIGKILL five after that. An exit asked for here is not announced as
+    /// `process_exited`, which means an engine that died on its own.
     func stop() async {
         guard let process, isRunning else { return }
-        try? stdinHandle?.close()
-        stdinHandle = nil
-        let deadline = Date().addingTimeInterval(10)
+        settle(because: "The oh-my-pi process was stopped")
+        if await Self.waitForExit(of: process, seconds: 10) { return }
+        process.terminate()
+        if await Self.waitForExit(of: process, seconds: 5) { return }
+        kill(process.processIdentifier, SIGKILL)
+    }
+
+    private static func waitForExit(of process: Process, seconds: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
         while process.isRunning && Date() < deadline {
             try? await Task.sleep(for: .milliseconds(100))
         }
-        if process.isRunning { process.terminate() }
-        isRunning = false
+        return !process.isRunning
     }
 
     func ingest(_ value: JSONValue) async {

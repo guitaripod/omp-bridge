@@ -67,6 +67,7 @@ router.middlewares.add(AnswerCompression<BasicRequestContext>())
 await registerRoutes(router, app: app, config: config)
 
 Task { await app.runObserver() }
+Task { await app.runReaper() }
 Task { await app.runHeartbeats() }
 
 let quietRegistry = app.quietRegistry

@@ -72,6 +72,7 @@ actor OmpSession {
     /// The journal entry the open turn wrote, so the end of this turn clears that entry and never
     /// the next turn's, which can be written before this turn's ending has finished publishing.
     private var journalTurnID: String?
+    private var engineStartedAt = Date.distantPast
     /// The messages people queued behind the running turn, in arrival order. Held here rather
     /// than on each device so every client of the conversation sees and can change the same
     /// queue; a file in the state directory keeps it across a restart.
@@ -611,6 +612,7 @@ actor OmpSession {
         }
         try await proc.start()
         process = proc
+        engineStartedAt = Date()
         if let file = ompSessionFile {
             _ = await proc.request("switch_session", fields: ["sessionPath": file], timeout: 60)
             adoptTranscriptIfNeeded()
@@ -660,6 +662,32 @@ actor OmpSession {
     func shutdown() async {
         await process?.stop()
         process = nil
+    }
+
+    /// When the engine last did anything, for the reaper: nil when there is no engine to let go or
+    /// the conversation still has work on it.
+    func idleEngineSince() async -> Date? {
+        guard let process, await process.isRunning, pendingUI == nil, !carriesWork() else {
+            return nil
+        }
+        return max(lastEventAt, engineStartedAt)
+    }
+
+    /// Lets an idle engine go, unless the engine says background work (an async shell, task or
+    /// eval) could still wake it, or anything touched the conversation after `since` was read: the
+    /// engine is asked across an await, so everything is checked again on the step that stops it.
+    /// The next prompt starts a fresh engine on the same transcript.
+    func releaseIdleEngine(quietSince since: Date) async -> Bool {
+        guard let engine = process, pendingUI == nil, !carriesWork() else { return false }
+        let state = await engine.request("get_state", timeout: 10)
+        guard state.success, state.data?["hasPendingAsyncWork"]?.boolValue != true,
+            state.data?["isStreaming"]?.boolValue != true,
+            process === engine, pendingUI == nil, !carriesWork(),
+            max(lastEventAt, engineStartedAt) <= since
+        else { return false }
+        process = nil
+        await engine.stop()
+        return true
     }
 
     // MARK: sending

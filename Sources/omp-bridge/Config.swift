@@ -17,6 +17,11 @@ struct Config: Sendable {
     /// How long `GET /sessions/:id/wait` may hold one request before it gives up and answers
     /// `state: "running"` — "still going, ask again" rather than holding a connection forever.
     let waitMax: TimeInterval
+    /// How long a conversation's engine is kept once nothing has happened on it. Each one is a
+    /// whole oh-my-pi in memory, a few hundred megabytes, and coming back costs a second or two.
+    var processTTL: TimeInterval = 1800
+    /// How many idle engines are kept at once; past this the longest-idle goes, whatever its keep.
+    var processPool: Int = 4
 
     static func load() -> Config {
         let env = ProcessInfo.processInfo.environment
@@ -45,7 +50,9 @@ struct Config: Sendable {
             defaultModel: env["OMP_MODEL"].flatMap { $0.isEmpty ? nil : $0 },
             defaultEffort: env["OMP_EFFORT"] ?? "medium",
             titleModel: env["OMP_TITLE_MODEL"].flatMap { $0.isEmpty ? nil : $0 },
-            waitMax: TimeInterval(Int(env["OMP_WAIT_MAX"] ?? "") ?? 10800)
+            waitMax: TimeInterval(Int(env["OMP_WAIT_MAX"] ?? "") ?? 10800),
+            processTTL: TimeInterval(Int(env["OMP_PROCESS_TTL"] ?? "") ?? 1800),
+            processPool: max(0, Int(env["OMP_PROCESS_POOL"] ?? "") ?? 4)
         )
     }
 

@@ -284,6 +284,31 @@ actor App {
         }
     }
 
+    func runReaper() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(60))
+            await reapIdleEngines()
+        }
+    }
+
+    /// Lets go of engines nobody is using: each one idle past ``Config/processTTL``, and the
+    /// longest-idle ones past ``Config/processPool`` whatever their keep, as claude-bridge keeps
+    /// its CLIs. Before this an engine stayed for the life of the bridge once its chat had been
+    /// used, a few hundred megabytes for every chat touched since the last restart.
+    func reapIdleEngines(now: Date = Date()) async {
+        var idle: [(session: OmpSession, since: Date)] = []
+        for (_, session) in sessions {
+            if let since = await session.idleEngineSince() { idle.append((session, since)) }
+        }
+        idle.sort { $0.since < $1.since }
+        for (index, entry) in idle.enumerated() {
+            let overKeep = now.timeIntervalSince(entry.since) > config.processTTL
+            let overPool = idle.count - index > config.processPool
+            guard overKeep || overPool else { continue }
+            _ = await entry.session.releaseIdleEngine(quietSince: entry.since)
+        }
+    }
+
     private func sweep() async {
         let current = await currentSummaries()
         for (id, summary) in current where lastSummaries[id] != summary {

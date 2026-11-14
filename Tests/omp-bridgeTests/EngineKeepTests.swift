@@ -63,6 +63,39 @@ private func gone(_ pid: Int) async -> Bool {
 }
 
 @Suite struct EngineKeepTests {
+    @Test func anIdleEngineIsLetGo() async throws {
+        let engine = try Engine()
+        let session = engine.session()
+        let pid = try #require(await session.ensureProcess().processID)
+        let since = try #require(await session.idleEngineSince())
+        #expect(await session.releaseIdleEngine(quietSince: since))
+        #expect(await gone(pid))
+        #expect(await session.idleEngineSince() == nil)
+    }
+
+    @Test func anEngineWithBackgroundWorkIsKept() async throws {
+        let engine = try Engine(state: #"{"hasPendingAsyncWork":true}"#)
+        let session = engine.session()
+        let pid = try #require(await session.ensureProcess().processID)
+        let since = try #require(await session.idleEngineSince())
+        #expect(await !session.releaseIdleEngine(quietSince: since))
+        #expect(kill(pid_t(pid), 0) == 0)
+        await session.shutdown()
+        #expect(await gone(pid))
+    }
+
+    @Test func anEngineThatMovedAfterItWasReadIsKept() async throws {
+        let engine = try Engine()
+        let session = engine.session()
+        let pid = try #require(await session.ensureProcess().processID)
+        let since = try #require(await session.idleEngineSince())
+        try await Task.sleep(for: .milliseconds(20))
+        await session.handleOmpEvent(.object(["type": .string("queue_update")]))
+        #expect(await !session.releaseIdleEngine(quietSince: since))
+        await session.shutdown()
+        #expect(await gone(pid))
+    }
+
     @Test func aTurnClearsOnlyItsOwnJournalEntry() async throws {
         let root = makeTempDir("journal")
         let journal = TurnJournal(path: root + "/turns.json")
