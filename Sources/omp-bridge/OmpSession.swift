@@ -1217,7 +1217,18 @@ actor OmpSession {
             try await startTurn(prompt: Self.prompt(text, files: held.files), display: held.item.text)
         } catch {
             await publish(.error(error.localizedDescription))
+            await holdQueueAfterFailedLaunch()
         }
+    }
+
+    /// A launch that failed (the engine would not start, say) ends no turn, so nothing would ever
+    /// drain what is queued behind it: the items sat there unpaused and a direct send jumped ahead
+    /// of them. They are held as paused instead, which every client shows, and a resume or the
+    /// next send tries again.
+    private func holdQueueAfterFailedLaunch() async {
+        guard !queue.isEmpty, !queuePaused else { return }
+        queuePaused = true
+        await publishQueue()
     }
 
     // MARK: shared queue
