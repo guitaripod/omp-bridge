@@ -102,6 +102,15 @@ actor OmpSession {
     private var liveModel: String?
     private var lastSnapshotAt = Date.distantPast
     private var lastTranscriptMtime: Date?
+    private var lastTranscriptLoadAt = Date.distantPast
+    /// The transcript changed since it was last read in whole.
+    private var transcriptBehind = false
+    /// How often a transcript something else is writing is read back in whole. A terminal driving
+    /// the conversation changes the file every second, and reading a transcript of many megabytes
+    /// that often held this conversation's actor for most of each second; its tail, which says
+    /// whether the turn is still open and when anything was last said, is still read on every
+    /// change, and the end of the turn is read in whole at once.
+    private static let transcriptReloadGap: TimeInterval = 3
     private var transcriptActivity = TranscriptActivity()
     /// The moment this bridge's own last turn was over. What its engine wrote up to then belongs to
     /// that turn, never to one somebody is running from a terminal — even when the engine died with
@@ -2326,6 +2335,15 @@ extension OmpSession {
         let mtime = TranscriptLoader.mtime(file)
         if mtime != lastTranscriptMtime {
             lastTranscriptMtime = mtime
+            let activity = TranscriptClock.read(atPath: file)
+            if transcriptActivity.turnOpen, !activity.turnOpen { lastTranscriptLoadAt = .distantPast }
+            transcriptActivity = activity
+            if let said = activity.lastSaid, said > updatedAt { updatedAt = said }
+            transcriptBehind = true
+        }
+        if transcriptBehind, Date().timeIntervalSince(lastTranscriptLoadAt) >= Self.transcriptReloadGap {
+            transcriptBehind = false
+            lastTranscriptLoadAt = Date()
             let loaded = TranscriptLoader.load(sessionFile: file)
             transcriptActivity = loaded.activity
             if loaded.messages.count != messages.count {
