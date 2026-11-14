@@ -242,11 +242,20 @@ actor OmpSession {
             let sent = try await send(
                 text: quietHere ? text + ScheduleWording.quietNote : text, displayText: text,
                 model: model, effort: effort)
-            return sent.queued ? .queued(position: sent.position ?? 0) : .started
+            return sent.queued ? .queued(position: turnsAheadOfLastQueued()) : .started
         } catch {
             quietPending = false
             return .failed(String(describing: error))
         }
+    }
+
+    /// How many turns will end before the item just queued gets a turn of its own, which is what
+    /// a schedule counts down: the turn running or starting now, and every prompt queued ahead. A
+    /// queued compaction ends no turn, and the queue position alone left out the running turn, so
+    /// a scheduled run was settled by the end of the turn in front of it.
+    private func turnsAheadOfLastQueued() -> Int {
+        let running = (self.running || starting) ? 1 : 0
+        return running + queue.dropLast().filter { $0.item.kind != QueuedItem.commandKind }.count
     }
 
     private var activeAgentCount: Int {

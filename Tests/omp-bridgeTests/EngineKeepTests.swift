@@ -128,6 +128,15 @@ private func gone(_ pid: Int) async -> Bool {
         #expect(await registry.read().turns == 1)
     }
 
+    @Test func aScheduledRunCountsTheTurnInFrontOfIt() async throws {
+        let engine = try Engine()
+        let session = engine.session()
+        _ = try await session.send(text: "first", model: nil, effort: nil)
+        let queued = await session.sendScheduled(text: "later", model: nil, effort: nil, quiet: false)
+        #expect(queued == .queued(position: 1))
+        await session.shutdown()
+    }
+
     @Test func aTurnClearsOnlyItsOwnJournalEntry() async throws {
         let root = makeTempDir("journal")
         let journal = TurnJournal(path: root + "/turns.json")
