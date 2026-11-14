@@ -202,7 +202,19 @@ enum TranscriptLoader {
         return formatter.date(from: text)
     }
 
+    /// When the file last changed, read with one `lstat`, which is what
+    /// `FileManager.attributesOfItem` reads too: the observer asks this of every transcript every
+    /// second, and building a whole attribute dictionary for it (owner and group names looked up
+    /// each time) was most of what an idle bridge spent its CPU on.
     static func mtime(_ path: String) -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return nil }
+        #if canImport(Darwin)
+            let stamp = info.st_mtimespec
+        #else
+            let stamp = info.st_mtim
+        #endif
+        return Date(
+            timeIntervalSince1970: TimeInterval(stamp.tv_sec) + TimeInterval(stamp.tv_nsec) / 1_000_000_000)
     }
 }
