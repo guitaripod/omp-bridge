@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.15.0 — 2026-11-15
+
+- A chat that finished while you were away says what the agent said. The list of chats now carries the opening of the last answer for each chat you have not read yet, so the app can show it under the chat's name instead of the word "Finished", the same as claude-bridge 1.26.0. It shows in the Tailscode builds that follow this release; older apps ignore it. A chat this bridge has not opened since it started still says "Finished" until it is opened once.
+
 ## 0.14.0 — 2026-11-14
 
 - Idle conversations let their oh-my-pi go. An engine stayed in memory, a few hundred megabytes each, for every chat used since the bridge last started; now one that has been idle for 30 minutes is stopped, at most four idle ones are kept, and one with background work still running is never touched. The next message starts it again on the same conversation in a second or two. `OMP_PROCESS_TTL` and `OMP_PROCESS_POOL` change the keep.
