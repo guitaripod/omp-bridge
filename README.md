@@ -118,6 +118,7 @@ username is convention (`omp`) and any value is accepted.
 | `OMP_WAIT_MAX` | `10800` (3h) | seconds `GET /sessions/:id/wait` holds before answering `running` |
 | `OMP_PROCESS_TTL` | `1800` (30m) | seconds a conversation's engine is kept once nothing has happened on it |
 | `OMP_PROCESS_POOL` | `4` | idle engines kept at once; past this the longest-idle goes first |
+| `OMP_CLIENT_NOTE` | `1` | `0` stops appending the short note that tells the engine its replies are read in Tailscode (`--append-system-prompt`, text in `ClientNote.swift`); takes effect as each engine starts |
 
 ## Waiting on a turn
 

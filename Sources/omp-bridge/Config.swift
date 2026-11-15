@@ -22,6 +22,8 @@ struct Config: Sendable {
     var processTTL: TimeInterval = 1800
     /// How many idle engines are kept at once; past this the longest-idle goes, whatever its keep.
     var processPool: Int = 4
+    /// Whether every conversation's engine is told where its replies are read (`ClientNote`).
+    var clientNote = true
 
     static func load() -> Config {
         let env = ProcessInfo.processInfo.environment
@@ -52,7 +54,8 @@ struct Config: Sendable {
             titleModel: env["OMP_TITLE_MODEL"].flatMap { $0.isEmpty ? nil : $0 },
             waitMax: TimeInterval(Int(env["OMP_WAIT_MAX"] ?? "") ?? 10800),
             processTTL: TimeInterval(Int(env["OMP_PROCESS_TTL"] ?? "") ?? 1800),
-            processPool: max(0, Int(env["OMP_PROCESS_POOL"] ?? "") ?? 4)
+            processPool: max(0, Int(env["OMP_PROCESS_POOL"] ?? "") ?? 4),
+            clientNote: env["OMP_CLIENT_NOTE"] != "0"
         )
     }
 

@@ -625,7 +625,8 @@ actor OmpSession {
         if let existing = process, await existing.isRunning { return existing }
         let proc = OmpProcess(
             ompBin: config.ompBin, directory: directory,
-            extraEnv: ["PI_RPC_EMIT_TITLE": "0"]
+            extraEnv: ["PI_RPC_EMIT_TITLE": "0"],
+            arguments: ClientNote.arguments(enabled: config.clientNote)
         ) { [weak self] frame in
             await self?.handleOmpEvent(frame)
         }
