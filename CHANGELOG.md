@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.16.0 — 2026-11-15
+
+- Oh My Pi knows its replies are read in Tailscode. Each chat's engine starts with a short fixed note, added after oh-my-pi's own instructions rather than in place of them, saying you may be away from the machine, which Markdown the app shows and that pictures written as Markdown, HTML, Mermaid and LaTeX show as text, and that notifications show only its first sentence or two, so it leads with the outcome. A chat picks it up the next time its engine starts. `OMP_CLIENT_NOTE=0` turns it off.
+
 ## 0.15.0 — 2026-11-15
 
 - A chat that finished while you were away says what the agent said. The list of chats now carries the opening of the last answer for each chat you have not read yet, so the app can show it under the chat's name instead of the word "Finished", the same as claude-bridge 1.26.0. It shows in the Tailscode builds that follow this release; older apps ignore it. A chat this bridge has not opened since it started still says "Finished" until it is opened once.
