@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.18.0 — 2026-11-16
+
+- A look at a chat is dated to when it happened, a bridge that just started does not tell a phone you have left before every desk has spoken, and no desk report can overflow the idle count.
+
 ## 0.17.0 — 2026-11-16
 
 - Desks: a desktop Tailscode tells this bridge whether its person is at the computer (`/presence`), so a phone that holds only this bridge can stay quiet while they are and hear what they left unread once they go. It works with the Tailscode builds that follow this release; older apps never ask.
