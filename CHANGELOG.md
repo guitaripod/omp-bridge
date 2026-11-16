@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.17.0 — 2026-11-16
+
+- Desks: a desktop Tailscode tells this bridge whether its person is at the computer (`/presence`), so a phone that holds only this bridge can stay quiet while they are and hear what they left unread once they go. It works with the Tailscode builds that follow this release; older apps never ask.
+
 ## 0.16.0 — 2026-11-15
 
 - Oh My Pi knows its replies are read in Tailscode. Each chat's engine starts with a short fixed note, added after oh-my-pi's own instructions rather than in place of them, saying you may be away from the machine, which Markdown the app shows and that pictures written as Markdown, HTML, Mermaid and LaTeX show as text, and that notifications show only its first sentence or two, so it leads with the outcome. A chat picks it up the next time its engine starts. `OMP_CLIENT_NOTE=0` turns it off.
