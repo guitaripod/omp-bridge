@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.18.1 — 2026-11-16
+
+- A turn run in a terminal stays live through a tool that works quietly for minutes, instead of reading as finished three minutes into a long build, and a phone waiting on such a turn is told how it really ended and when, rather than the ending of the last turn this bridge ran.
+
 ## 0.18.0 — 2026-11-16
 
 - A look at a chat is dated to when it happened, a bridge that just started does not tell a phone you have left before every desk has spoken, and no desk report can overflow the idle count.

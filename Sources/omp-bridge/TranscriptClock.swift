@@ -15,11 +15,19 @@ struct TranscriptActivity: Equatable, Sendable {
     var turnOpen = false
     /// Whether the engine writing the transcript has said since then that it stopped.
     var engineExited = false
+    /// Whether that row hands the turn to a tool the transcript has not heard back from. A long
+    /// build or test writes nothing until it returns, so its quiet is the tool working.
+    var toolOut = false
+    /// How the newest answer closed the turn, as oh-my-pi recorded it (`stop`, `aborted`,
+    /// `error`, `length`), when the newest row that decides the turn is that answer.
+    var lastStop: String?
 
     /// A turn somebody is running from somewhere else: still open, its engine still there, and
-    /// heard from after `horizon`.
-    func isLive(after horizon: Date) -> Bool {
-        turnOpen && !engineExited && (lastSaid ?? .distantPast) > horizon
+    /// heard from after `horizon` — or after `toolHorizon`, while a tool it handed work to has
+    /// not answered.
+    func isLive(after horizon: Date, toolHorizon: Date? = nil) -> Bool {
+        let since = toolOut ? min(horizon, toolHorizon ?? horizon) : horizon
+        return turnOpen && !engineExited && (lastSaid ?? .distantPast) > since
     }
 }
 
@@ -71,6 +79,8 @@ enum TranscriptClock {
             }
             if let open = leavesTurnOpen(row) {
                 activity.turnOpen = open
+                activity.toolOut = handsToATool(row)
+                activity.lastStop = closingStop(row)
                 return activity
             }
         }
@@ -102,6 +112,29 @@ enum TranscriptClock {
 
     private static func isExit(_ row: JSONValue) -> Bool {
         row["type"]?.stringValue == "custom" && row["customType"]?.stringValue == "session_exit"
+    }
+
+    /// Whether a row is the engine handing work to a tool: the answer that calls it, or the row
+    /// oh-my-pi files as the tool starts.
+    private static func handsToATool(_ row: JSONValue) -> Bool {
+        switch row["type"]?.stringValue {
+        case "message":
+            return row["message"]?["role"]?.stringValue == "assistant"
+                && row["message"]?["stopReason"]?.stringValue == "toolUse"
+        case "custom":
+            return row["customType"]?.stringValue == "tool_execution_start"
+        default:
+            return false
+        }
+    }
+
+    /// The stop reason of an answer that closed its turn.
+    private static func closingStop(_ row: JSONValue) -> String? {
+        guard row["type"]?.stringValue == "message",
+            row["message"]?["role"]?.stringValue == "assistant",
+            let stop = row["message"]?["stopReason"]?.stringValue, stop != "toolUse"
+        else { return nil }
+        return stop
     }
 
     /// Whether a conversation row leaves the engine something to answer. Nil for a compaction,

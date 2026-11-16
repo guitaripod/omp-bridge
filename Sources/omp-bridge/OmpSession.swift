@@ -2256,6 +2256,10 @@ actor OmpSession {
     }
 
     static let externalActivityWindow: TimeInterval = 180
+    /// How long a turn run elsewhere stays live while a tool it handed work to has not answered:
+    /// a long build or test writes nothing until it returns, and an engine that died without
+    /// signing off is given up on after this.
+    static let externalToolWindow: TimeInterval = 3600
     /// How long after this bridge closed its own turn a row the engine files is still that turn's
     /// tail — an abort's last words land a moment after the abort has answered.
     static let ownTailSlack: TimeInterval = 5
@@ -2451,10 +2455,35 @@ extension OmpSession {
                 updatedAt = said
             }
         }
-        let horizon = max(
-            Date().addingTimeInterval(-Self.externalActivityWindow),
-            ownTurnSettledAt.addingTimeInterval(Self.ownTailSlack))
-        externallyLive = transcriptActivity.isLive(after: horizon)
+        let ownTail = ownTurnSettledAt.addingTimeInterval(Self.ownTailSlack)
+        let horizon = max(Date().addingTimeInterval(-Self.externalActivityWindow), ownTail)
+        let toolHorizon = max(Date().addingTimeInterval(-Self.externalToolWindow), ownTail)
+        let wasLive = externallyLive
+        externallyLive = transcriptActivity.isLive(after: horizon, toolHorizon: toolHorizon)
+        if !wasLive, externallyLive { lastTurnOutcome = nil }
+        if wasLive, !externallyLive { recordExternalOutcome() }
+    }
+
+    /// What a waiting client is told about a turn run elsewhere — in a terminal, or by anything
+    /// else driving oh-my-pi — once its transcript closes it: how it ended, read from the stop
+    /// reason of its last answer, and when. Nothing here ran ``finishTurn(cause:)`` for it, and
+    /// a wait that answered from this bridge's own last turn would report that turn's ending,
+    /// tools and time instead; the outcome is dropped the moment such a turn begins, so a wait
+    /// that misses its end says it cannot tell rather than repeating an older turn.
+    private func recordExternalOutcome() {
+        guard !transcriptActivity.turnOpen else {
+            lastTurnOutcome = nil
+            return
+        }
+        let ending: TurnWait.Ending
+        switch transcriptActivity.lastStop {
+        case "aborted": ending = .cancelled
+        case "error": ending = .failed
+        default: ending = .finished
+        }
+        lastTurnOutcome = TurnOutcome(
+            ending: ending, toolCount: nil, duration: nil, lastMessageID: nil,
+            endedAt: transcriptActivity.lastSaid ?? Date())
     }
 
     func settleOwnTurn() {

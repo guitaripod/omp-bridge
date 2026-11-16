@@ -117,7 +117,9 @@ private func same(_ lhs: Date?, _ rhs: Date) -> Bool {
         ], modified: base.addingTimeInterval(86_400))
         let loaded = TranscriptLoader.load(sessionFile: path)
         #expect(same(loaded.updatedAt, said))
-        #expect(loaded.activity == TranscriptActivity(lastSaid: said, turnOpen: false, engineExited: true))
+        #expect(
+            loaded.activity
+                == TranscriptActivity(lastSaid: said, turnOpen: false, engineExited: true, lastStop: "stop"))
         #expect(TranscriptClock.read(atPath: path) == loaded.activity)
     }
 
@@ -176,8 +178,12 @@ private func same(_ lhs: Date?, _ rhs: Date) -> Bool {
         let betweenTurns = transcript([
             Row.header(base), Row.answer(base.addingTimeInterval(10), stop: "stop"), Row.compaction(seam),
         ])
-        #expect(TranscriptClock.read(atPath: midTurn) == TranscriptActivity(lastSaid: seam, turnOpen: true))
-        #expect(TranscriptClock.read(atPath: betweenTurns) == TranscriptActivity(lastSaid: seam, turnOpen: false))
+        #expect(
+            TranscriptClock.read(atPath: midTurn)
+                == TranscriptActivity(lastSaid: seam, turnOpen: true))
+        #expect(
+            TranscriptClock.read(atPath: betweenTurns)
+                == TranscriptActivity(lastSaid: seam, turnOpen: false, lastStop: "stop"))
     }
 
     @Test func aTailOfOneEnormousResultIsReadThroughAWiderWindow() {
@@ -200,6 +206,43 @@ private func same(_ lhs: Date?, _ rhs: Date) -> Bool {
         #expect(!TranscriptActivity(lastSaid: said, turnOpen: true, engineExited: true).isLive(after: horizon))
         #expect(!TranscriptActivity(lastSaid: said, turnOpen: true).isLive(after: said))
         #expect(!TranscriptActivity(lastSaid: nil, turnOpen: true).isLive(after: horizon))
+    }
+
+    /// A long build writes nothing until it returns: the tool's quiet is the turn working, up to
+    /// the longer window a tool is given, and only while the tool is the thing still out.
+    @Test func aToolStillOutKeepsATurnLiveThroughItsQuiet() throws {
+        let started = base.addingTimeInterval(10)
+        let path = transcript([
+            Row.header(base), Row.prompt(base.addingTimeInterval(5)),
+            Row.answer(started, stop: "toolUse", call: "c9"), Row.toolStart(started),
+        ])
+        let activity = TranscriptClock.read(atPath: path)
+        #expect(activity.toolOut)
+        let afterQuiet = started.addingTimeInterval(1)
+        let toolHorizon = started.addingTimeInterval(-1)
+        #expect(!activity.isLive(after: afterQuiet))
+        #expect(activity.isLive(after: afterQuiet, toolHorizon: toolHorizon))
+        #expect(!activity.isLive(after: afterQuiet, toolHorizon: afterQuiet))
+
+        let returned = transcript([
+            Row.header(base), Row.answer(started, stop: "toolUse", call: "c9"),
+            Row.result(started.addingTimeInterval(400), call: "c9"),
+        ])
+        let thinking = TranscriptClock.read(atPath: returned)
+        #expect(thinking.turnOpen && !thinking.toolOut)
+        #expect(!thinking.isLive(after: started.addingTimeInterval(500), toolHorizon: started))
+    }
+
+    @Test func theClosingAnswerSaysHowTheTurnEnded() {
+        for stop in ["stop", "aborted", "error", "length"] {
+            let path = transcript([
+                Row.header(base), Row.prompt(base.addingTimeInterval(5)),
+                Row.answer(base.addingTimeInterval(10), stop: stop),
+            ])
+            let activity = TranscriptClock.read(atPath: path)
+            #expect(!activity.turnOpen)
+            #expect(activity.lastStop == stop)
+        }
     }
 
     /// The store can only remember what the last process believed, and every process before this
