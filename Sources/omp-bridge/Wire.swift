@@ -506,6 +506,9 @@ struct BridgeStatus: Encodable {
     /// The protocol version of chapters: a session read carries `chapters` and
     /// `chaptersRevision`, and the session stream a `chapters` frame whenever they change.
     var chapters = 1
+    /// The protocol version of the desks this bridge keeps (`/presence`): who is at a computer,
+    /// so a phone that holds only this bridge can stay quiet while they are.
+    var presence = 1
     /// How a request got past the door, in claude-bridge's shape. This bridge has one door, the
     /// password, so it always says so.
     var access = StatusAccess()

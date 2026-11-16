@@ -151,6 +151,8 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         jsonResponse(await app.statusPayload())
     }
 
+    registerDeskRoutes(router, desks: DeskRegistry(), waitMax: config.waitMax)
+
     router.get("stream") { request, _ in
         var sinceEpoch: String?
         var sinceSeq: UInt64?
