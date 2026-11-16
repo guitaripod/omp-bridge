@@ -17,7 +17,7 @@ struct DeskTests {
 
     @Test("A desk is there while it reports, is unlocked and saw input within the device's patience")
     func occupancy() {
-        let desks = DeskRegistry()
+        let desks = DeskRegistry(startedAt: .distantPast)
         desks.record(report(idle: 10), now: at(0))
         #expect(desks.occupied(awayAfter: 120, now: at(0))?.desk == "arch")
         #expect(desks.occupied(awayAfter: 120, now: at(60))?.idle == 70, "idle keeps counting between reports")
@@ -40,15 +40,23 @@ struct DeskTests {
 
     @Test("A look counts from the moment it was reported, and reports are trimmed")
     func looks() throws {
-        let desks = DeskRegistry()
+        let desks = DeskRegistry(startedAt: .distantPast)
         desks.record(report(looked: ["s1", "", String(repeating: "x", count: 500)]), now: at(5))
-        #expect(desks.looked("s1", since: at(5)))
-        #expect(!desks.looked("s1", since: at(6)))
+        #expect(desks.looked("s1", since: at(-25)), "a first report's window is the beat before it")
+        #expect(!desks.looked("s1", since: at(-24)))
         #expect(desks.presence(now: at(5)).looked.keys.sorted() == ["s1"])
+        desks.record(
+            DeskReportBody(desk: "arch", name: "arch", idle: Int.max, looked: ["s2"], lookedAgo: ["s2": 3]),
+            now: at(35))
+        #expect(desks.looked("s2", since: at(32)) && !desks.looked("s2", since: at(33)))
+        #expect(desks.presence(now: at(65)).desks.first?.idle == DeskRegistry.idleLimit + 30)
+        let fresh = DeskRegistry(startedAt: at(0))
+        #expect(fresh.mayBeOccupied(awayAfter: 120, now: at(30)), "a bridge that just started cannot yet say nobody is there")
+        #expect(!fresh.mayBeOccupied(awayAfter: 120, now: at(DeskRegistry.staleAfter)))
         let body = try WireCoding.encoder.encode(desks.presence(now: at(5)))
         let text = try #require(String(data: body, encoding: .utf8))
         #expect(text.contains(#""heard":0"#))
-        #expect(text.contains(#""s1":"2030-03-17T17:46:45Z""#), "dates are ISO-8601 as the Kit reads them")
+        #expect(text.contains(#""s1":"2030-03-17T17:46:15Z""#), "dates are ISO-8601 as the Kit reads them")
     }
 
     @Test("A report from a newer or older desk decodes with quiet defaults")
