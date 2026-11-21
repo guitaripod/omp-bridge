@@ -8,8 +8,15 @@ struct MachineQuiet: Codable, Sendable {
     static let unknown = MachineQuiet(
         quiet: false, turns: 0, reason: "This machine has not finished counting what it is doing.")
 
-    static func read(turns: Int) -> MachineQuiet {
-        guard turns > 0 else { return MachineQuiet(quiet: true, turns: 0) }
+    static func read(turns: Int, commands: Int = 0) -> MachineQuiet {
+        guard turns > 0 else {
+            guard commands > 0 else { return MachineQuiet(quiet: true, turns: 0) }
+            return MachineQuiet(
+                quiet: false, turns: 0,
+                reason: commands == 1
+                    ? "A command is running in a terminal on that machine."
+                    : "\(commands) commands are running in terminals on that machine.")
+        }
         return MachineQuiet(
             quiet: false, turns: turns,
             reason: turns == 1

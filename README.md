@@ -24,6 +24,7 @@ conversation, and exposes them as plain HTTP + Server-Sent Events.
 | Commands | `GET /commands?session=` (live slash-command catalog from omp), `GET /commands[?directory=]` (the machine's catalog with no chat open — a scratch omp asked in that directory, cached 5 min) |
 | Files | `GET /files`, `/files/content`, `/files/raw`, `GET /attachments/:session/:name` |
 | Git | `GET /git`, `/git/diff`, `/git/commit` (read-only) |
+| Terminals | `GET/POST /terminals`, `GET/DELETE /terminals/:id`, `GET /terminals/:id/output?from=`, `POST /terminals/:id/input`, `POST /terminals/:id/resize` |
 | Auth | `GET /auth`, `POST /auth/login`, `/auth/code`, `/auth/cancel` (omp provider login) |
 | Update | `GET/POST /update`, `POST /update/restart`, `POST /update/auto` |
 

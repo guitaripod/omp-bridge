@@ -19,6 +19,8 @@ let package = Package(
                 .product(name: "HummingbirdCompression", package: "hummingbird-compression"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "PairingKit", package: "CodingAgentKit"),
+                .product(name: "TerminalHost", package: "CodingAgentKit"),
+                .product(name: "TerminalWire", package: "CodingAgentKit"),
             ]
         ),
         .testTarget(
@@ -30,7 +32,7 @@ let package = Package(
 
 enum Kit {
     static let remote = "https://github.com/guitaripod/CodingAgentKit.git"
-    static let version = Version(0, 38, 0)
+    static let version = Version(0, 65, 0)
 
     static var dependency: Package.Dependency {
         let forced = ProcessInfo.processInfo.environment["OMP_BRIDGE_KIT_REMOTE"] ?? ""

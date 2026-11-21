@@ -500,6 +500,9 @@ struct BridgeStatus: Encodable {
     var queue: Int
     /// The protocol version of the schedules this machine keeps and asks (`/schedules`).
     var schedules = 1
+    /// The protocol version of the terminals this bridge holds for its clients (`/terminals`): a
+    /// shell on this machine that outlives the client that opened it.
+    var terminals = 1
     /// The protocol version of the session read's sidecar: `GET /sessions/:id` answers the cut-off
     /// turn and the provider wait as the whole word on each, in claude-bridge's shape.
     var detail = 1

@@ -1,5 +1,6 @@
 import Foundation
 import Hummingbird
+import TerminalHost
 
 func env(_ key: String, _ fallback: String) -> String {
     ProcessInfo.processInfo.environment[key].flatMap { $0.isEmpty ? nil : $0 } ?? fallback
@@ -65,6 +66,13 @@ if !config.password.isEmpty {
 }
 router.middlewares.add(AnswerCompression<BasicRequestContext>())
 await registerRoutes(router, app: app, config: config)
+var terminalPolicy = TerminalHall.Policy()
+terminalPolicy.secrets = ["OMP_PASSWORD"]
+let terminalHall = TerminalHall(policy: terminalPolicy)
+let sessionStore = app.store
+registerTerminalRoutes(router, hall: terminalHall) { id in
+    await sessionStore.record(for: id)?.directory
+}
 
 Task { await app.runObserver() }
 Task { await app.runReaper() }
@@ -75,7 +83,7 @@ let updateService = app.updateService
 await updateService.attach(
     quiet: {
         let machineQuiet = await quietRegistry.read()
-        return MachineQuiet.read(turns: machineQuiet.turns)
+        return MachineQuiet.read(turns: machineQuiet.turns, commands: terminalHall.busyCount())
     },
     settle: { await app.flushAll() })
 await updateService.resume()
