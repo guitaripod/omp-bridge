@@ -20,6 +20,7 @@ struct SubagentState: Sendable {
     var startedAt: Date?
     var toolCount: Int?
     var currentTool: String?
+    var runID: String?
 }
 
 enum LivePart {
@@ -602,7 +603,7 @@ actor OmpSession {
                 id: state.id, title: state.title ?? "agent", agentType: state.agentType,
                 toolUseID: state.toolUseID, updatedAt: state.updatedAt, active: state.active,
                 completed: !state.active, startedAt: state.startedAt, toolCount: state.toolCount,
-                currentTool: state.currentTool)
+                currentTool: state.currentTool, runID: state.runID)
         }
         .sorted { ($0.updatedAt, $0.id) > ($1.updatedAt, $1.id) }
     }
@@ -1787,13 +1788,49 @@ actor OmpSession {
     /// ever ran on every change for the rest of its life.
     private func forgetOldFinishedAgents() {
         let finished = subagents.values.filter { !$0.active }
-        guard finished.count > Self.finishedAgentsKept else { return }
-        for state in finished.sorted(by: { $0.updatedAt > $1.updatedAt }).dropFirst(Self.finishedAgentsKept) {
-            subagents.removeValue(forKey: state.id)
+        let workflow = finished.filter { $0.runID != nil }
+        let own = finished.filter { $0.runID == nil }
+        for (group, kept) in [(own, Self.finishedAgentsKept), (workflow, Self.finishedWorkflowAgentsKept)]
+        where group.count > kept {
+            for state in group.sorted(by: { $0.updatedAt > $1.updatedAt }).dropFirst(kept) {
+                subagents.removeValue(forKey: state.id)
+            }
         }
     }
 
     private static let finishedAgentsKept = 50
+    /// A workflow run's card counts every agent the run fanned out, so a finished run keeps its
+    /// whole roster: one run may fan out two hundred.
+    private static let finishedWorkflowAgentsKept = 400
+
+    /// Takes in a workflow run's roster, live or final, and passes it on under the same gate a
+    /// task agent's progress goes through: a start or an end at once, progress at most once a
+    /// second.
+    private func absorbWorkflowAgents(_ roster: [SubagentState]) async {
+        guard !roster.isEmpty else { return }
+        var lifecycleMoved = false
+        for agent in roster {
+            let known = subagents[agent.id]
+            if known?.active != agent.active { lifecycleMoved = true }
+            subagents[agent.id] = agent
+        }
+        forgetOldFinishedAgents()
+        let waited = Date().timeIntervalSince(lastAgentsPublishAt)
+        guard lifecycleMoved || waited >= Self.agentsFrameGap else {
+            scheduleAgentsFrame(after: Self.agentsFrameGap - waited)
+            return
+        }
+        await publishAgents()
+    }
+
+    /// The rosters a transcript read from disk holds, for a chat whose runs this bridge did not
+    /// watch: what is already known from the live run wins.
+    private func adoptWorkflowAgents(_ roster: [SubagentState]) {
+        for agent in roster where subagents[agent.id] == nil {
+            subagents[agent.id] = agent
+        }
+        forgetOldFinishedAgents()
+    }
 
     /// oh-my-pi's word on a sub-agent, which lives under `payload`: a lifecycle frame when one
     /// starts or ends, and a progress frame — keyed by the same id inside `progress` — whenever its
@@ -2099,6 +2136,8 @@ actor OmpSession {
             $0["text"]?.stringValue
         }
         let output = texts.joined()
+        await absorbWorkflowAgents(
+            WorkflowAgents.read(frame["partialResult"]?["details"], toolCallID: toolCallID, now: Date()))
         guard let seat = seatOfToolPart(toolCallID) else { return }
         mutateToolPart(seat) { tool in
             tool.output = Self.boundedOutput(output)
@@ -2136,6 +2175,8 @@ actor OmpSession {
                 $0["image"]?.stringValue
             }.joined()
         }
+        await absorbWorkflowAgents(
+            WorkflowAgents.settled(frame["result"]?["details"], toolCallID: toolCallID, now: Date()))
         guard let seat = seatOfToolPart(toolCallID) else { return }
         toolPublishedAt[toolCallID] = nil
         mutateToolPart(seat) { tool in
@@ -2247,6 +2288,7 @@ actor OmpSession {
         let loaded = TranscriptLoader.load(sessionFile: file)
         if !loaded.messages.isEmpty {
             messages = loaded.messages
+            adoptWorkflowAgents(loaded.workflowAgents)
             adoptSpend(from: loaded.messages)
             ompSessionID = loaded.sessionID
             if let first = loaded.firstUserText, !customTitle, !autoTitled {
@@ -2411,6 +2453,7 @@ extension OmpSession {
 
     func adoptExternally(loaded: LoadedTranscript, ompID: String?) async {
         messages = loaded.messages
+        adoptWorkflowAgents(loaded.workflowAgents)
         if !chapters.isEmpty { chapters = ChapterBook.reanchored(chapters, messages: messages) }
         adoptSpend(from: loaded.messages)
         if let id = ompID ?? loaded.sessionID { ompSessionID = id }

@@ -210,6 +210,8 @@ struct SubagentSummary: Codable, Sendable, Equatable {
     var startedAt: Date?
     var toolCount: Int?
     var currentTool: String?
+    /// The workflow run that fanned the agent out, in claude-bridge's field and meaning.
+    var runID: String?
 }
 
 struct SubagentTranscript: Codable, Sendable {

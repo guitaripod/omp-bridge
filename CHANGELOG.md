@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.20.0 — 2026-11-24
+
+- A workflow run shows its agents: the agents a workflow fans out appear on the run's card in Tailscode, working, done or failed, while the run goes and after a restart, where the card used to say it had none. Needs the workflow extension from the same day.
+
 ## 0.19.0 — 2026-11-21
 
 - A terminal on this machine, from any Tailscode: the bridge now opens your login shell on a pseudo-terminal of its own, in the folder the chat works in, and keeps it, the same as claude-bridge 1.38.0. Close the app, lose the connection or pick up another device and the same shell is there with its folder, its scrollback and whatever was running. A command running in a terminal holds a restart or an update the way a running turn does; a shell left idle at its prompt with nobody reading is closed after twelve hours. It shows in the Tailscode builds that follow this release; older apps never ask.

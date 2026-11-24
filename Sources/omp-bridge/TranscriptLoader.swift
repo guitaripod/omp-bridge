@@ -14,6 +14,8 @@ struct LoadedTranscript {
     var messages: [Message] = []
     var model: String?
     var effort: String?
+    /// The agents every workflow run in the transcript fanned out, from the roster its result kept.
+    var workflowAgents: [SubagentState] = []
 }
 
 enum TranscriptLoader {
@@ -127,6 +129,8 @@ enum TranscriptLoader {
                         return nil
                     }.joined()
                     let isError = message["isError"]?.boolValue ?? false
+                    result.workflowAgents += WorkflowAgents.settled(
+                        message["details"], toolCallID: callID, now: timestamp)
                     if let index = result.messages.lastIndex(where: { msg in
                         msg.parts.contains { part in
                             if case .tool(let call) = part { return call.id == callID && call.status == .running }

@@ -118,6 +118,41 @@ private func writeTranscript(_ dir: String, lines: [String]) -> String {
         #expect(found.first?.title == "Session")
     }
 
+    @Test func aWorkflowRunsRosterSurvivesInItsTranscript() async throws {
+        let dir = makeTempDir("workflow-roster")
+        let roster = #"{"run":"wf_abc123def456","call":"c9","name":"pair","agents":[{"id":"wf_abc123def456-1","index":1,"label":"one","phase":"Fan","status":"done","startedAt":1787647898000,"endedAt":1787647899000},{"id":"wf_abc123def456-2","index":2,"label":"two","status":"running","startedAt":1787647898000}]}"#
+        let path = writeTranscript(dir, lines: [
+            #"{"type":"session","id":"sess-wf","cwd":"/tmp/wf"}"#,
+            #"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"run it"}],"timestamp":1787647897000}}"#,
+            #"{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c9","name":"workflow","arguments":{"name":"pair"}}],"timestamp":1787647897500}}"#,
+            #"{"type":"message","message":{"role":"toolResult","toolCallId":"c9","content":[{"type":"text","text":"done"}],"details":{"agents":2,"failed":0,"workflow":"# + roster + #"},"isError":false,"timestamp":1787647900000}}"#,
+        ])
+        let loaded = TranscriptLoader.load(sessionFile: path)
+        #expect(loaded.workflowAgents.map(\.id) == ["wf_abc123def456-1", "wf_abc123def456-2"])
+        #expect(loaded.workflowAgents.allSatisfy { !$0.active }, "nothing of a run outlives its call")
+
+        let session = makeSession(directory: dir, file: path)
+        await session.adoptExternally(loaded: loaded, ompID: nil)
+        let agents = await session.subagentSummaries()
+        #expect(agents.count == 2)
+        let one = try #require(agents.first { $0.id == "wf_abc123def456-1" })
+        #expect(one.agentType == "workflow-subagent")
+        #expect(one.toolUseID == "c9")
+        #expect(one.runID == "wf_abc123def456")
+        #expect(one.title == "one")
+        #expect(one.completed)
+        #expect(one.startedAt == Date(timeIntervalSince1970: 1_787_647_898))
+        #expect(one.updatedAt == Date(timeIntervalSince1970: 1_787_647_899))
+
+        let live = WorkflowAgents.read(
+            JSONValue.from(try JSONSerialization.jsonObject(with: Data((#"{"workflow":"# + roster + "}").utf8))),
+            toolCallID: "other", now: Date(timeIntervalSince1970: 5))
+        #expect(live.map(\.active) == [false, true])
+        #expect(live[1].updatedAt == Date(timeIntervalSince1970: 5))
+        #expect(WorkflowAgents.read(nil, toolCallID: "c", now: Date()).isEmpty)
+        #expect(WorkflowAgents.read(.object(["workflow": .object(["agents": .array([])])]), toolCallID: "c", now: Date()).isEmpty)
+    }
+
     @Test func adoptExternallyFillsState() async throws {
         let dir = makeTempDir("adopt")
         let path = writeTranscript(dir, lines: [
