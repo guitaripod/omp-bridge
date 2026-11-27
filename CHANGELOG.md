@@ -4,6 +4,11 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.22.0 — 2026-11-27
+
+- A WebM, a Matroska or an Ogg an agent names now plays on an iPhone, an iPad and a Mac: asked for a copy Apple's players read, the bridge converts the file once with ffmpeg (H.264 and AAC, or AAC for a song) and keeps the copy for a week; without ffmpeg it says so and the app says the file cannot play there.
+- A conversation started from a Tailscode that shows the files a reply names begins with a note telling oh-my-pi to write a picture's, a video's or a song's absolute path to show it; conversations started from older apps keep the old note.
+
 ## 0.21.0 — 2026-11-27
 
 - A video or a song an agent names plays in Tailscode: `/files/raw` now answers byte ranges, and `POST /files/ticket` hands a player a link to that one file that needs no password, good for as long as it is being watched (six idle hours, forgotten on restart). A plain read keeps its size cap. The note oh-my-pi starts with now says that writing a video's or a song's absolute path shows it as a player. It shows in the Tailscode builds that follow this release; older apps never ask.

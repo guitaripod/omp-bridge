@@ -44,6 +44,9 @@ actor OmpSession {
     private(set) var effort: String
     private(set) var ompSessionID: String?
     private(set) var ompSessionFile: String?
+    /// What the app that started this conversation said it can show (`X-Client-Features`), from
+    /// its first request: the note the engine is started with is written for that app.
+    private(set) var clientFeatures: [String]?
     private(set) var createdAt: Date
     private(set) var updatedAt: Date
     let forkedAt: Date?
@@ -620,6 +623,12 @@ actor OmpSession {
         updatedAt = Date()
     }
 
+    /// Keeps what the first app to speak in this conversation can show; later apps change nothing.
+    func noteClientFeatures(_ features: [String]?) {
+        guard clientFeatures == nil, let features else { return }
+        clientFeatures = features
+    }
+
     // MARK: process lifecycle
 
     func ensureProcess() async throws -> OmpProcess {
@@ -627,7 +636,9 @@ actor OmpSession {
         let proc = OmpProcess(
             ompBin: config.ompBin, directory: directory,
             extraEnv: ["PI_RPC_EMIT_TITLE": "0"],
-            arguments: ClientNote.arguments(enabled: config.clientNote)
+            arguments: ClientNote.arguments(
+                enabled: config.clientNote,
+                mediaByPath: clientFeatures?.contains(ClientNote.mediaByPathFeature) == true)
         ) { [weak self] frame in
             await self?.handleOmpEvent(frame)
         }

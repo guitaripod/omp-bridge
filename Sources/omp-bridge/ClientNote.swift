@@ -15,7 +15,22 @@ enum ClientNote {
         chat list show only the first sentence or two of your reply, so lead with the outcome.
         """
 
-    static func arguments(enabled: Bool) -> [String] {
-        enabled ? ["--append-system-prompt", text] : []
+    /// For an app that shows a picture, a video or a song whose path a reply names
+    /// (`X-Client-Features: media-by-path`).
+    static let mediaText = """
+        This session is driven from Tailscode, an app on the user's phone, tablet or computer. \
+        They may not be at this machine, so do not count on them seeing its terminal, windows or \
+        browser. Your replies render as Markdown in a chat view: fenced code gets a copy button, \
+        links are tappable and wide tables scroll sideways. Markdown images, raw HTML, Mermaid \
+        and LaTeX do not render, and file paths are not tappable. To show the user a picture, a \
+        video or an audio file on this machine, write its absolute path in your reply; Tailscode \
+        shows it in the chat. Notifications and the chat list show only the first sentence or \
+        two of your reply, so lead with the outcome.
+        """
+
+    static let mediaByPathFeature = "media-by-path"
+
+    static func arguments(enabled: Bool, mediaByPath: Bool = false) -> [String] {
+        enabled ? ["--append-system-prompt", mediaByPath ? mediaText : text] : []
     }
 }

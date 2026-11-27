@@ -327,6 +327,7 @@ func registerRoutes(
             title: nil, directory: nil, model: nil, effort: nil)
         let session = await app.createSession(
             title: body.title, directory: body.directory, model: body.model, effort: body.effort)
+        await session.noteClientFeatures(clientFeatures(request))
         await app.persistNewSession(session)
         return jsonResponse(await sessionSnapshot(session), status: .created)
     }
@@ -423,9 +424,22 @@ func registerRoutes(
             return errorResponse("No path given", status: .badRequest)
         }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let path = FileBrowsing.resolve(body.path, home: home)
-        guard let size = FileBrowsing.readableSize(path, cap: Int.max) else {
+        var path = FileBrowsing.resolve(body.path, home: home)
+        guard var size = FileBrowsing.readableSize(path, cap: Int.max) else {
             return errorResponse("not readable", status: .notFound)
+        }
+        if body.playable == "apple", !MediaConvert.playsOnApple(path) {
+            do {
+                path = try await MediaConvert.shared.playableCopy(of: path, size: size)
+                size = FileBrowsing.readableSize(path, cap: Int.max) ?? size
+            } catch MediaConvert.Failure.noConverter {
+                return jsonResponse(
+                    ["error": "cannot convert", "reason": "ffmpeg is not installed on this machine"],
+                    status: .unprocessableContent)
+            } catch {
+                return jsonResponse(
+                    ["error": "cannot convert", "reason": "\(error)"], status: .unprocessableContent)
+            }
         }
         let ticket = await tickets.issue(path: path)
         return jsonResponse(
@@ -555,6 +569,7 @@ func registerRoutes(
         do {
             let session = try await resolveSession(context)
             let body = try await decodeBody(SendRequest.self, request, limit: 32 << 20)
+            await session.noteClientFeatures(clientFeatures(request))
             var promptText = body.text
             let displayText = body.text
             var files: [FileRef] = []
@@ -909,6 +924,19 @@ func registerRoutes(
 
 struct FileTicketRequest: Decodable {
     let path: String
+    /// `apple` asks for a copy Apple's players read when the file is in a format they do not.
+    let playable: String?
+}
+
+/// What the app sending a request says it can show (`X-Client-Features`, comma-separated), nil
+/// for an app that says nothing.
+func clientFeatures(_ request: Request) -> [String]? {
+    guard let name = HTTPField.Name("X-Client-Features"), let raw = request.headers[name] else {
+        return nil
+    }
+    let names = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+    return names.isEmpty ? nil : names
 }
 
 struct FileTicketAnswer: Encodable {
