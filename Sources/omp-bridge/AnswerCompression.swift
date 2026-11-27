@@ -31,7 +31,8 @@ struct AnswerCompression<Context: RequestContext>: RouterMiddleware {
     /// Whether an answer is a finished document worth compressing: a known length, no encoding of
     /// its own, and a textual type.
     static func isDocument(_ response: Response) -> Bool {
-        guard response.body.contentLength != nil, response.headers[.contentEncoding] == nil,
+        guard response.status != .partialContent, response.body.contentLength != nil,
+            response.headers[.contentEncoding] == nil,
             let type = response.headers[.contentType]?.lowercased()
         else { return false }
         if type.hasPrefix("text/event-stream") { return false }

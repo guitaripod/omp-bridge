@@ -10,8 +10,9 @@ enum ClientNote {
         They may not be at this machine, so do not count on them seeing its terminal, windows or \
         browser. Your replies render as Markdown in a chat view: fenced code gets a copy button, \
         links are tappable and wide tables scroll sideways. Markdown images, raw HTML, Mermaid \
-        and LaTeX do not render, and file paths are not tappable. Notifications and the chat list \
-        show only the first sentence or two of your reply, so lead with the outcome.
+        and LaTeX do not render, and file paths are not tappable. A video or audio file on this \
+        machine shows as a player when your reply names its absolute path. Notifications and the \
+        chat list show only the first sentence or two of your reply, so lead with the outcome.
         """
 
     static func arguments(enabled: Bool) -> [String] {

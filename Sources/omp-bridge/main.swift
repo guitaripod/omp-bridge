@@ -61,11 +61,12 @@ let app = App(config: config)
 await app.prepare()
 
 let router = Router()
+let fileTickets = FileTickets()
 if !config.password.isEmpty {
-    router.middlewares.add(BasicAuthMiddleware(password: config.password))
+    router.middlewares.add(BasicAuthMiddleware(password: config.password, tickets: fileTickets))
 }
 router.middlewares.add(AnswerCompression<BasicRequestContext>())
-await registerRoutes(router, app: app, config: config)
+await registerRoutes(router, app: app, config: config, tickets: fileTickets)
 var terminalPolicy = TerminalHall.Policy()
 terminalPolicy.secrets = ["OMP_PASSWORD"]
 let terminalHall = TerminalHall(policy: terminalPolicy)
@@ -107,21 +108,33 @@ do {
 /// a correct password over a label locks those clients out for nothing.
 struct BasicAuthMiddleware<Context: RequestContext>: RouterMiddleware {
     private let password: String
+    private let tickets: FileTickets?
 
-    init(password: String) {
+    init(password: String, tickets: FileTickets? = nil) {
         self.password = password
+        self.tickets = tickets
     }
 
     func handle(
         _ request: Request, context: Context,
         next: (Request, Context) async throws -> Response
     ) async throws -> Response {
+        if let ticket = Self.ticket(request), let tickets, await tickets.path(for: ticket) != nil {
+            return try await next(request, context)
+        }
         guard Self.matches(suppliedPassword(request), password) else {
             var headers = HTTPFields()
             headers[.wwwAuthenticate] = "Basic realm=\"omp-bridge\""
             return Response(status: .unauthorized, headers: headers)
         }
         return try await next(request, context)
+    }
+
+    /// The ticket a player's read carries, when it is a read of `/files/raw` and nothing else: a
+    /// ticket admits that one route, never a session, a terminal or a setting.
+    static func ticket(_ request: Request) -> String? {
+        guard request.method == .get, request.uri.path == "/files/raw" else { return nil }
+        return request.uri.queryParameters.get("ticket").map { String($0) }
     }
 
     /// Compares every byte whatever the first difference, so how long a wrong password takes to

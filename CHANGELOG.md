@@ -4,6 +4,10 @@ Each release in a line or two per change, written for the person deciding whethe
 Tailscode app reads this file from the project's head, so what it shows as new is exactly what is
 listed here above the version a machine is running.
 
+## 0.21.0 — 2026-11-27
+
+- A video or a song an agent names plays in Tailscode: `/files/raw` now answers byte ranges, and `POST /files/ticket` hands a player a link to that one file that needs no password, good for as long as it is being watched (six idle hours, forgotten on restart). A plain read keeps its size cap. The note oh-my-pi starts with now says that writing a video's or a song's absolute path shows it as a player. It shows in the Tailscode builds that follow this release; older apps never ask.
+
 ## 0.20.0 — 2026-11-24
 
 - A workflow run shows its agents: the agents a workflow fans out appear on the run's card in Tailscode, working, done or failed, while the run goes and after a restart, where the card used to say it had none. Needs the workflow extension from the same day.

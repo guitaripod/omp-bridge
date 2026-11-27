@@ -94,26 +94,46 @@ private func rawResponse(
 }
 
 private func fileResponse(
-    path: String, size: Int, mime: String?, cacheControl: String = "private, max-age=60"
+    path: String, size: Int, mime: String?, cacheControl: String = "private, max-age=60",
+    range: ByteRange = .whole
 ) -> Response {
     var headers = HTTPFields()
     headers[.contentType] = mime
     headers[.cacheControl] = cacheControl
-    headers[.contentLength] = String(size)
+    headers[.acceptRanges] = "bytes"
+    let lower: Int
+    let length: Int
+    let status: HTTPResponse.Status
+    switch range {
+    case .whole:
+        (lower, length, status) = (0, size, .ok)
+    case .part(let first, let last):
+        (lower, length, status) = (first, last - first + 1, .partialContent)
+        headers[.contentRange] = "bytes \(first)-\(last)/\(size)"
+    case .unsatisfiable:
+        headers[.contentRange] = "bytes */\(size)"
+        return Response(status: .rangeNotSatisfiable, headers: headers)
+    }
+    headers[.contentLength] = String(length)
     let stream = ResponseBody { writer in
         guard let handle = FileHandle(forReadingAtPath: path) else {
             try await writer.finish(nil)
             return
         }
         defer { try? handle.close() }
-        while let chunk = try handle.read(upToCount: 512 * 1024), !chunk.isEmpty {
+        if lower > 0 { try handle.seek(toOffset: UInt64(lower)) }
+        var remaining = length
+        while remaining > 0, let chunk = try handle.read(upToCount: min(512 * 1024, remaining)),
+            !chunk.isEmpty
+        {
             var buffer = ByteBufferAllocator().buffer(capacity: chunk.count)
             buffer.writeBytes(chunk)
             try await writer.write(buffer)
+            remaining -= chunk.count
         }
         try await writer.finish(nil)
     }
-    return Response(status: .ok, headers: headers, body: stream)
+    return Response(status: status, headers: headers, body: stream)
 }
 
 /// Runs an SSE body and lets go of its hub subscriber however the body ends. A write to a client
@@ -139,7 +159,9 @@ func decodeBody<T: Decodable>(
     return try WireCoding.decoder.decode(T.self, from: Data(buffer.readableBytesView))
 }
 
-func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Config) async {
+func registerRoutes(
+    _ router: Router<BasicRequestContext>, app: App, config: Config, tickets: FileTickets
+) async {
 
     // MARK: handshake
 
@@ -364,17 +386,52 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         return jsonResponse(FileContent(path: path, content: content))
     }
 
+    /// A player streams: a request that carries a ticket or a byte range is served whatever the
+    /// file's size, a range at a time, because nothing holds more than a chunk of it. A plain read
+    /// keeps the size cap, so a client that takes a whole body into memory is never handed a film.
     router.get("files/raw") { request, _ in
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        guard let raw = request.uri.queryParameters.get("path") else {
+        let ticketed = request.uri.queryParameters.get("ticket").map { String($0) }
+        let path: String
+        if let ticketed {
+            guard let admitted = await tickets.path(for: ticketed) else {
+                return errorResponse("ticket expired", status: .notFound)
+            }
+            path = admitted
+        } else if let raw = request.uri.queryParameters.get("path") {
+            path = FileBrowsing.resolve(raw, home: home)
+        } else {
             return errorResponse("No path given", status: .badRequest)
         }
-        let path = FileBrowsing.resolve(raw, home: home)
-        guard let size = FileBrowsing.readableSize(path) else {
+        let rangeHeader = request.headers[.range]
+        let streaming = ticketed != nil || rangeHeader != nil
+        guard let size = FileBrowsing.readableSize(path, cap: streaming ? Int.max : 40 * 1024 * 1024)
+        else {
             return errorResponse("not readable", status: .notFound)
         }
         let ext = (path as NSString).pathExtension
-        return fileResponse(path: path, size: size, mime: mimeType(forExtension: ext))
+        return fileResponse(
+            path: path, size: size, mime: mimeType(forExtension: ext),
+            range: ByteRange.parse(rangeHeader, size: size))
+    }
+
+    /// A ticket for a player to read one file with (`FileTickets`): the URL to open, and what the
+    /// file is, so a client can say how big a video is before anything plays.
+    router.post("files/ticket") { request, _ in
+        guard let body = try? await decodeBody(FileTicketRequest.self, request), !body.path.isEmpty
+        else {
+            return errorResponse("No path given", status: .badRequest)
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let path = FileBrowsing.resolve(body.path, home: home)
+        guard let size = FileBrowsing.readableSize(path, cap: Int.max) else {
+            return errorResponse("not readable", status: .notFound)
+        }
+        let ticket = await tickets.issue(path: path)
+        return jsonResponse(
+            FileTicketAnswer(
+                url: "/files/raw?ticket=\(ticket)", size: size,
+                mime: mimeType(forExtension: (path as NSString).pathExtension)))
     }
 
     router.get("git") { request, _ in
@@ -783,7 +840,22 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         case "png": "image/png"
         case "gif": "image/gif"
         case "heic": "image/heic"
+        case "heif": "image/heif"
         case "webp": "image/webp"
+        case "avif": "image/avif"
+        case "bmp": "image/bmp"
+        case "tif", "tiff": "image/tiff"
+        case "mp4": "video/mp4"
+        case "m4v": "video/x-m4v"
+        case "mov": "video/quicktime"
+        case "webm": "video/webm"
+        case "mkv": "video/x-matroska"
+        case "mp3": "audio/mpeg"
+        case "m4a": "audio/mp4"
+        case "aac": "audio/aac"
+        case "wav": "audio/wav"
+        case "flac": "audio/flac"
+        case "ogg", "oga", "opus": "audio/ogg"
         case "pdf": "application/pdf"
         case "txt", "log", "md": "text/plain; charset=utf-8"
         case "json": "application/json"
@@ -833,4 +905,14 @@ func registerRoutes(_ router: Router<BasicRequestContext>, app: App, config: Con
         }
         return nil
     }
+}
+
+struct FileTicketRequest: Decodable {
+    let path: String
+}
+
+struct FileTicketAnswer: Encodable {
+    let url: String
+    let size: Int
+    let mime: String
 }
